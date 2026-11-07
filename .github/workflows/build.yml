@@ -16,17 +16,13 @@ jobs:
       run: |
         export THEOS=$HOME/theos
         git clone --recursive https://github.com/theos/theos.git $THEOS
-        curl -L https://github.com/theos/sdks/archive/master.zip -o sdks.zip
-        unzip sdks.zip
-        mkdir -p $THEOS/sdks
-        mv sdks-master/* $THEOS/sdks/
-        rm -rf sdks.zip sdks-master
+        git clone --depth 1 https://github.com/theos/sdks.git $THEOS/sdks
 
     - name: Build Dylib
       run: |
         export THEOS=$HOME/theos
         make clean
-        make package FINALPACKAGE=1
+        make
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
