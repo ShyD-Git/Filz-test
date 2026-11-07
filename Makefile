@@ -7,6 +7,6 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = FilzaQAMock
 
 FilzaQAMock_FILES = Tweak.x
-FilzaQAMock_CFLAGS = -fobjc-arc
+FilzaQAMock_CFLAGS = -fobjc-arc -Wno-error=deprecated-declarations
 
 include $(THEOS_MAKE_PATH)/tweak.mk
