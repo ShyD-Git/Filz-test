@@ -28,9 +28,12 @@ jobs:
         make clean
         make
 
+    - name: Extract Dylib
+      run: |
+        find .theos -name "*.dylib" -exec cp {} ./FilzaQAMock.dylib \;
+
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: FilzaQAMock-Dylib
-        path: .theos/**/FilzaQAMock.dylib
-        if-no-files-found: error
+        path: ./FilzaQAMock.dylib
