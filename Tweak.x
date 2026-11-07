@@ -29,9 +29,9 @@
             NSData *mockData = [@"{\"status\":\"success\",\"activated\":true,\"valid\":true,\"code\":200}" dataUsingEncoding:NSUTF8StringEncoding];
             if (completionHandler) completionHandler(mockData, response, nil);
         };
-        return %orig(request, fakeHandler);
+        completionHandler = fakeHandler;
     }
-    return %orig;
+    return %orig(request, completionHandler);
 }
 %end
 
@@ -61,10 +61,24 @@
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"activated"];
         [[NSUserDefaults standardUserDefaults] synchronize];
         
-        // Tự động đóng cái popup
+        // Tự động đóng cái popup (Fix deprecated keyWindow cho iOS mới)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIWindow *window = UIApplication.sharedApplication.keyWindow;
-            UIViewController *rootVC = window.rootViewController;
+            UIWindow *keyWindow = nil;
+            if (@available(iOS 13.0, *)) {
+                for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                    if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                            if (w.isKeyWindow) {
+                                keyWindow = w;
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else {
+                keyWindow = [UIApplication sharedApplication].keyWindow;
+            }
+            UIViewController *rootVC = keyWindow.rootViewController;
             if (rootVC.presentedViewController) {
                 [rootVC dismissViewControllerAnimated:YES completion:nil];
             }
