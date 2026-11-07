@@ -28,7 +28,7 @@
         NSString *className = NSStringFromClass(cls);
         NSString *lowerName = [className lowercaseString];
         
-        // Nhắm vào các class kiểm tra bản quyền của Filza
+        // Nhắm vào các class kiểm tra bản quyền
         if ([lowerName containsString:@"license"] || 
             [lowerName containsString:@"activat"] || 
             [lowerName containsString:@"verify"] ||
@@ -37,7 +37,6 @@
             unsigned int methodCount;
             Method *methods = class_copyMethodList(cls, &methodCount);
             for (unsigned int j = 0; j < methodCount; j++) {
-                SEL selector = method_getName(methods[j]);
                 const char *typeEncoding = method_getTypeEncoding(methods[j]);
                 
                 // Nếu hàm trả về BOOL (c hoặc B)
