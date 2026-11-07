@@ -1,0 +1,34 @@
+name: Build QA Dylib
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Theos
+      run: |
+        export THEOS=$HOME/theos
+        git clone --recursive https://github.com/theos/theos.git $THEOS
+        curl -L https://github.com/theos/sdks/archive/master.zip -o sdks.zip
+        unzip sdks.zip
+        mkdir -p $THEOS/sdks
+        mv sdks-master/* $THEOS/sdks/
+        rm -rf sdks.zip sdks-master
+
+    - name: Build Dylib
+      run: |
+        export THEOS=$HOME/theos
+        make clean
+        make package FINALPACKAGE=1
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: FilzaQAMock-Dylib
+        path: .theos/obj/debug/FilzaQAMock.dylib
