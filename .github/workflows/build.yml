@@ -16,6 +16,7 @@ jobs:
       run: |
         export THEOS=$HOME/theos
         git clone --recursive https://github.com/theos/theos.git $THEOS
+        rm -rf $THEOS/sdks
         git clone --depth 1 https://github.com/theos/sdks.git $THEOS/sdks
 
     - name: Build Dylib
@@ -28,4 +29,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: FilzaQAMock-Dylib
-        path: .theos/obj/debug/FilzaQAMock.dylib
+        path: .theos/obj/FilzaQAMock.dylib
+        if-no-files-found: warn
