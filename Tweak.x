@@ -18,22 +18,41 @@
 }
 %end
 
-// 2. Đè kết quả JSON nếu nó parse
-%hook NSJSONSerialization
-+ (id)JSONObjectWithData:(NSData *)data options:(NSJSONReadingOptions)opt error:(NSError **)error {
-    if (data) {
-        NSString *str = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        if ([str containsString:@"activate"] || [str containsString:@"valid"] || [str containsString:@"success"] || [str containsString:@"false"]) {
-            NSData *fakeData = [@"{\"status\":\"success\",\"activated\":true,\"valid\":true,\"success\":true,\"code\":200}" dataUsingEncoding:NSUTF8StringEncoding];
-            id result = %orig(fakeData, opt, error);
-            if (result) return result;
+// 2. Can thiệp thẳng vào bảng Tùy chỉnh để đổi chữ "Dùng thử" thành "Vĩnh viễn"
+%hook TGPreferencesTableViewController
+- (id)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    id cell = %orig;
+    
+    // Quét tìm label trong cell và đổi chữ
+    for (UIView *view in [cell subviews]) {
+        if ([view isKindOfClass:[UILabel class]]) {
+            UILabel *lbl = (UILabel *)view;
+            if ([lbl.text containsString:@"Dùng thử"] || [lbl.text containsString:@"Chưa kích hoạt"]) {
+                lbl.text = @"Vĩnh viễn";
+                lbl.textColor = [UIColor systemBlueColor]; // Đổi màu xanh cho đẹp
+            }
         }
     }
-    return %orig;
+    return cell;
 }
 %end
 
-// 3. Ép mọi class của Filza (bắt đầu bằng TG) trả về TRUE nếu check bản quyền
+// 3. Hook UILabel an toàn (Chỉ đổi chữ Thất bại, bỏ qua UITableViewLabel để không crash)
+%hook UILabel
+- (void)setText:(NSString *)text {
+    if ([NSStringFromClass([self class]) isEqualToString:@"UITableViewLabel"]) {
+        %orig;
+        return;
+    }
+    if ([text containsString:@"Thất bại"] || [text containsString:@"Không thể kích hoạt"]) {
+        %orig(@"Thành công. Đã kích hoạt!");
+        return;
+    }
+    %orig;
+}
+%end
+
+// 4. Ép logic cốt lõi của Filza trả về True
 %ctor {
     int numClasses = objc_getClassList(NULL, 0);
     Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
@@ -43,19 +62,19 @@
         Class cls = classes[i];
         NSString *className = NSStringFromClass(cls);
         
-        if ([className hasPrefix:@"TG"] || [className containsString:@"Preferences"]) {
+        if ([className hasPrefix:@"TG"] || [className containsString:@"License"] || [className containsString:@"Activation"] || [className containsString:@"Serial"]) {
             unsigned int methodCount;
             Method *methods = class_copyMethodList(cls, &methodCount);
             for (unsigned int j = 0; j < methodCount; j++) {
                 NSString *methodName = NSStringFromSelector(method_getName(methods[j]));
                 NSString *lowerMethod = [methodName lowercaseString];
-                
                 const char *typeEncoding = method_getTypeEncoding(methods[j]);
-                if ((typeEncoding[0] == 'c' || typeEncoding[0] == 'B') && 
-                   ([lowerMethod containsString:@"activ"] || [lowerMethod containsString:@"licens"] || [lowerMethod containsString:@"valid"] || [lowerMethod containsString:@"trial"] || [lowerMethod containsString:@"purchas"])) {
+                
+                if (typeEncoding && (typeEncoding[0] == 'B' || typeEncoding[0] == 'c' || typeEncoding[0] == 'i' || typeEncoding[0] == 'q') && 
+                   ([lowerMethod containsString:@"activ"] || [lowerMethod containsString:@"licens"] || [lowerMethod containsString:@"valid"] || [lowerMethod containsString:@"serial"] || [lowerMethod containsString:@"trial"])) {
                     
-                    IMP newImp = imp_implementationWithBlock(^BOOL(id _self) {
-                        return YES;
+                    IMP newImp = imp_implementationWithBlock(^NSInteger(id _self) {
+                        return 1;
                     });
                     method_setImplementation(methods[j], newImp);
                 }
@@ -66,28 +85,12 @@
     free(classes);
 }
 
-// 4. Tự động đổi chữ "Thất bại" thành "Thành công" trong UIAlertController
+// 5. Chặn popup báo lỗi, thay bằng thông báo thành công
 %hook UIAlertController
 + (instancetype)alertControllerWithTitle:(NSString *)title message:(NSString *)message preferredStyle:(UIAlertControllerStyle)preferredStyle {
     if ([title containsString:@"Thất bại"] || [message containsString:@"Thất bại"] || [message containsString:@"Không thể kích hoạt"]) {
         return %orig(@"Thành công", @"Đã kích hoạt Filza vĩnh viễn!", UIAlertControllerStyleAlert);
     }
     return %orig;
-}
-%end
-
-// 5. Tự động bấm nút Kích hoạt (nếu nó hiện bảng đòi nhập)
-%hook UIButton
-- (void)layoutSubviews {
-    %orig;
-    NSString *title = [self titleForState:UIControlStateNormal];
-    if ([title containsString:@"Kích hoạt"] || [title containsString:@"Activate"]) {
-        if (self.tag != 9999) {
-            self.tag = 9999;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self sendActionsForControlEvents:UIControlEventTouchUpInside];
-            });
-        }
-    }
 }
 %end
