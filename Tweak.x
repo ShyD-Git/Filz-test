@@ -2,13 +2,22 @@
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
 
+// Khai báo giả để compiler không báo lỗi "forward declaration"
+@interface TGUserDefaults : NSObject
++ (instancetype)sharedInstance;
+- (BOOL)isActivated;
+- (void)setBool:(BOOL)arg1 forKey:(id)arg2;
+- (void)setObject:(id)arg1 forKey:(id)arg2;
+- (id)objectForKey:(id)arg1;
+- (void)synchronize;
+@end
+
 // Hàm tự động kích hoạt ngầm
 static void forceActivateApp() {
-    Class TGUserDefaults = objc_getClass("TGUserDefaults");
-    if (TGUserDefaults) {
-        id sharedInstance = ((id (*)(id, SEL))objc_msgSend)((id)TGUserDefaults, sel_registerName("sharedInstance"));
+    Class TGUserDefaultsClass = objc_getClass("TGUserDefaults");
+    if (TGUserDefaultsClass) {
+        id sharedInstance = ((id (*)(id, SEL))objc_msgSend)((id)TGUserDefaultsClass, sel_registerName("sharedInstance"));
         if (sharedInstance) {
-            // Ghi đè trạng thái vào bộ nhớ đệm
             ((void (*)(id, SEL, BOOL))objc_msgSend)(sharedInstance, sel_registerName("setIsActivated:"), YES);
             ((void (*)(id, SEL, id))objc_msgSend)(sharedInstance, sel_registerName("setLicenseType:"), @"Lifetime");
             ((void (*)(id, SEL, id))objc_msgSend)(sharedInstance, sel_registerName("setObject:forKey:"), @"Lifetime", @"license_status");
@@ -37,7 +46,6 @@ static void forceActivateApp() {
     return %orig;
 }
 - (void)synchronize {
-    // Trước khi lưu file, ép nó ghi trạng thái Vĩnh viễn
     [self setBool:YES forKey:@"is_activated"];
     [self setObject:@"Lifetime" forKey:@"license_status"];
     %orig;
