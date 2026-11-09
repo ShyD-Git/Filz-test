@@ -2,39 +2,6 @@
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
 
-// Hàm C đệ quy quét mọi ngóc ngách của UIView
-static void scanAndClickButton(UIView *view) {
-    if (!view) return;
-    for (UIView *subview in view.subviews) {
-        // 1. Nếu là UIButton
-        if ([subview isKindOfClass:[UIButton class]]) {
-            UIButton *btn = (UIButton *)subview;
-            NSString *title = [btn titleForState:UIControlStateNormal];
-            if ([title containsString:@"Kích hoạt"] || [title containsString:@"Activate"]) {
-                [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
-                NSLog(@"[QA-MOCK] Đã tự động bấm nút Kích hoạt!");
-                return;
-            }
-        } 
-        // 2. Nếu là UILabel nằm trong một UIControl (nút custom)
-        else if ([subview isKindOfClass:[UILabel class]]) {
-            UILabel *lbl = (UILabel *)subview;
-            if ([lbl.text containsString:@"Kích hoạt"] || [lbl.text containsString:@"Activate"]) {
-                UIView *parent = lbl.superview;
-                while (parent) {
-                    if ([parent isKindOfClass:[UIControl class]]) {
-                        [(UIControl *)parent sendActionsForControlEvents:UIControlEventTouchUpInside];
-                        NSLog(@"[QA-MOCK] Đã tự động bấm qua UILabel!");
-                        return;
-                    }
-                    parent = parent.superview;
-                }
-            }
-        }
-        scanAndClickButton(subview);
-    }
-}
-
 // Lớp 1: Đè bộ nhớ đệm
 %hook NSUserDefaults
 - (BOOL)boolForKey:(NSString *)defaultName {
@@ -83,37 +50,45 @@ static void scanAndClickButton(UIView *view) {
 }
 %end
 
-// Lớp 4: Đổi text đỏ thành xanh và tự động đóng popup
-%hook UILabel
-- (void)setText:(NSString *)text {
-    if ([text containsString:@"Thất bại"] || [text containsString:@"Không thể kích hoạt"] || [text containsString:@"Failed"]) {
-        %orig(@"Thành công. Đã kích hoạt Filza!");
-        
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"is_activated"];
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"activated"];
-        [[NSUserDefaults standardUserDefaults] synchronize];
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIWindow *currentWindow = self.window;
-            if (!currentWindow) return;
-            UIViewController *rootVC = currentWindow.rootViewController;
-            if (rootVC.presentedViewController) {
-                [rootVC dismissViewControllerAnimated:YES completion:nil];
+// Lớp 4: Bắt Alert "Chưa kích hoạt" từ trong trứng nước, gọi ngầm và chặn hiển thị
+%hook UIViewController
+- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
+    if ([viewControllerToPresent isKindOfClass:[UIAlertController class]]) {
+        UIAlertController *alert = (UIAlertController *)viewControllerToPresent;
+        if ([alert.title containsString:@"Chưa kích hoạt"] || [alert.message containsString:@"Kích hoạt Filza"]) {
+            
+            // Lưu trạng thái
+            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"is_activated"];
+            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"activated"];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+            
+            // Tự động trigger nút Kích hoạt (gọi handler ngầm)
+            for (UIAlertAction *action in alert.actions) {
+                if ([action.title containsString:@"Kích hoạt"]) {
+                    void (^handler)(UIAlertAction *) = [action valueForKey:@"handler"];
+                    if (handler) {
+                        handler(action);
+                    }
+                    break;
+                }
             }
-        });
-        return;
+            
+            // Chặn đéo cho cái popup hiện ra
+            NSLog(@"[QA-MOCK] Đã chặn popup kích hoạt!");
+            return; 
+        }
     }
     %orig;
 }
 %end
 
-// Lớp 5: Mắt thần quét toàn bộ cửa sổ mỗi 0.5 giây
-%ctor {
-    [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer * _Nonnull timer) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            for (UIWindow *window in [UIApplication sharedApplication].windows) {
-                scanAndClickButton(window);
-            }
-        });
-    }];
+// Lớp 5: Đổi text đỏ thành xanh (Bỏ hoàn toàn block dispatch_after gây crash)
+%hook UILabel
+- (void)setText:(NSString *)text {
+    if ([text containsString:@"Thất bại"] || [text containsString:@"Không thể kích hoạt"] || [text containsString:@"Failed"]) {
+        %orig(@"Thành công. Đã kích hoạt Filza!");
+        return;
+    }
+    %orig;
 }
+%end
