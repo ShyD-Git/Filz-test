@@ -2,35 +2,6 @@
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
 
-// Khai báo đầy đủ các hàm để compiler không bắt bẻ
-@interface TGUserDefaults : NSObject
-+ (instancetype)sharedInstance;
-- (BOOL)isActivated;
-- (void)setIsActivated:(BOOL)activated;
-- (void)setLicenseType:(NSString *)type;
-- (void)setBool:(BOOL)arg1 forKey:(id)arg2;
-- (void)setObject:(id)arg1 forKey:(id)arg2;
-- (id)objectForKey:(id)arg1;
-- (void)synchronize;
-@end
-
-// Hàm tự động kích hoạt ngầm
-static void forceActivateApp() {
-    Class TGUserDefaultsClass = objc_getClass("TGUserDefaults");
-    if (TGUserDefaultsClass) {
-        TGUserDefaults *sharedInstance = [TGUserDefaultsClass sharedInstance];
-        if (sharedInstance) {
-            [sharedInstance setIsActivated:YES];
-            if ([sharedInstance respondsToSelector:@selector(setLicenseType:)]) {
-                [sharedInstance setLicenseType:@"Lifetime"];
-            }
-            [sharedInstance setObject:@"Lifetime" forKey:@"license_status"];
-            [sharedInstance setBool:YES forKey:@"is_activated"];
-            [sharedInstance synchronize];
-        }
-    }
-}
-
 // 1. Hook cứng class quản lý bộ nhớ của Filza
 %hook TGUserDefaults
 - (BOOL)isActivated {
@@ -57,7 +28,7 @@ static void forceActivateApp() {
 }
 %end
 
-// 2. Chặn mạng
+// 2. Chặn mạng, giả lập kích hoạt thành công
 %hook NSURLSession
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
     NSString *url = request.URL.absoluteString;
@@ -88,7 +59,7 @@ static void forceActivateApp() {
 }
 %end
 
-// 4. Đổi chữ hiển thị
+// 4. Đổi chữ hiển thị trên UI
 %hook UITableViewCell
 - (void)layoutSubviews {
     %orig;
@@ -104,10 +75,43 @@ static void forceActivateApp() {
 }
 %end
 
-// 5. Tự động kích hoạt ngay khi app vừa load xong
-%ctor {
-    forceActivateApp();
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
-        forceActivateApp();
-    }];
+// 5. Hook UILabel an toàn (Bỏ qua UITableViewLabel để không crash)
+%hook UILabel
+- (void)setText:(NSString *)text {
+    if ([NSStringFromClass([self class]) isEqualToString:@"UITableViewLabel"]) {
+        %orig;
+        return;
+    }
+    if ([text containsString:@"Thất bại"] || [text containsString:@"Không thể kích hoạt"]) {
+        %orig(@"Thành công. Đã kích hoạt!");
+        return;
+    }
+    %orig;
 }
+%end
+
+// 6. Chặn popup báo lỗi
+%hook UIAlertController
++ (instancetype)alertControllerWithTitle:(NSString *)title message:(NSString *)message preferredStyle:(UIAlertControllerStyle)preferredStyle {
+    if ([title containsString:@"Thất bại"] || [message containsString:@"Thất bại"] || [message containsString:@"Không thể kích hoạt"]) {
+        return %orig(@"Thành công", @"Đã kích hoạt Filza vĩnh viễn!", UIAlertControllerStyleAlert);
+    }
+    return %orig;
+}
+%end
+
+// 7. Tự động bấm nút Kích hoạt
+%hook UIButton
+- (void)layoutSubviews {
+    %orig;
+    NSString *title = [self titleForState:UIControlStateNormal];
+    if ([title containsString:@"Kích hoạt"] || [title containsString:@"Activate"]) {
+        if (self.tag != 9999) {
+            self.tag = 9999;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self sendActionsForControlEvents:UIControlEventTouchUpInside];
+            });
+        }
+    }
+}
+%end
