@@ -55,7 +55,6 @@
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     
-    // Quét tìm nút "Kích hoạt" và tự động bấm
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self scanAndClickActivate:self.view];
     });
@@ -72,37 +71,27 @@
                 NSLog(@"[QA-MOCK] Tự động bấm nút Kích hoạt!");
             }
         }
-        [self scanAndClickActivate:subview]; // Đệ quy tìm tiếp
+        [self scanAndClickActivate:subview]; 
     }
 }
 %end
 
-// Lớp 5: Đổi text đỏ thành xanh và tự động đóng popup
+// Lớp 5: Đổi text đỏ thành xanh và tự động đóng popup (Không dùng keyWindow)
 %hook UILabel
 - (void)setText:(NSString *)text {
     if ([text containsString:@"Thất bại"] || [text containsString:@"Không thể kích hoạt"] || [text containsString:@"Failed"]) {
         %orig(@"Thành công. Đã kích hoạt Filza!");
         
-        // Lưu cứng trạng thái vào bộ nhớ
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"is_activated"];
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"activated"];
         [[NSUserDefaults standardUserDefaults] synchronize];
         
-        // Tự động đóng popup
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIWindow *keyWindow = nil;
-            if (@available(iOS 13.0, *)) {
-                for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                    if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                            if (w.isKeyWindow) { keyWindow = w; break; }
-                        }
-                    }
-                }
-            } else {
-                keyWindow = [UIApplication sharedApplication].keyWindow;
-            }
-            UIViewController *rootVC = keyWindow.rootViewController;
+            // Lấy window trực tiếp từ UILabel, bỏ qua hàm keyWindow bị deprecate
+            UIWindow *currentWindow = self.window;
+            if (!currentWindow) return;
+            
+            UIViewController *rootVC = currentWindow.rootViewController;
             if (rootVC.presentedViewController) {
                 [rootVC dismissViewControllerAnimated:YES completion:nil];
             }
