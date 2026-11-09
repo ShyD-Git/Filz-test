@@ -2,10 +2,12 @@
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
 
-// Khai báo giả để compiler không báo lỗi "forward declaration"
+// Khai báo đầy đủ các hàm để compiler không bắt bẻ
 @interface TGUserDefaults : NSObject
 + (instancetype)sharedInstance;
 - (BOOL)isActivated;
+- (void)setIsActivated:(BOOL)activated;
+- (void)setLicenseType:(NSString *)type;
 - (void)setBool:(BOOL)arg1 forKey:(id)arg2;
 - (void)setObject:(id)arg1 forKey:(id)arg2;
 - (id)objectForKey:(id)arg1;
@@ -16,12 +18,15 @@
 static void forceActivateApp() {
     Class TGUserDefaultsClass = objc_getClass("TGUserDefaults");
     if (TGUserDefaultsClass) {
-        id sharedInstance = ((id (*)(id, SEL))objc_msgSend)((id)TGUserDefaultsClass, sel_registerName("sharedInstance"));
+        TGUserDefaults *sharedInstance = [TGUserDefaultsClass sharedInstance];
         if (sharedInstance) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(sharedInstance, sel_registerName("setIsActivated:"), YES);
-            ((void (*)(id, SEL, id))objc_msgSend)(sharedInstance, sel_registerName("setLicenseType:"), @"Lifetime");
-            ((void (*)(id, SEL, id))objc_msgSend)(sharedInstance, sel_registerName("setObject:forKey:"), @"Lifetime", @"license_status");
-            ((void (*)(id, SEL))objc_msgSend)(sharedInstance, sel_registerName("synchronize"));
+            [sharedInstance setIsActivated:YES];
+            if ([sharedInstance respondsToSelector:@selector(setLicenseType:)]) {
+                [sharedInstance setLicenseType:@"Lifetime"];
+            }
+            [sharedInstance setObject:@"Lifetime" forKey:@"license_status"];
+            [sharedInstance setBool:YES forKey:@"is_activated"];
+            [sharedInstance synchronize];
         }
     }
 }
