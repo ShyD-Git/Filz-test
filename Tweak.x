@@ -3,72 +3,43 @@
 #import <UIKit/UIKit.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 
-// Hàm C đệ quy tự động tìm và bấm nút
-static void forceActivate(UIView *view) {
-    if (!view) return;
-    for (UIView *subview in view.subviews) {
-        if ([subview isKindOfClass:[UIButton class]]) {
-            UIButton *btn = (UIButton *)subview;
-            if ([[btn titleForState:UIControlStateNormal] containsString:@"Kích hoạt"] || 
-                [[btn titleForState:UIControlStateNormal] containsString:@"Activate"]) {
-                [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
-                NSLog(@"[QA-MOCK] Auto-click UIButton!");
-                return;
-            }
-        } else if ([subview isKindOfClass:[UILabel class]]) {
-            UILabel *lbl = (UILabel *)subview;
-            if ([lbl.text containsString:@"Kích hoạt"] || [lbl.text containsString:@"Activate"]) {
-                UIView *parent = lbl.superview;
-                while (parent) {
-                    if ([parent isKindOfClass:[UIControl class]]) {
-                        [(UIControl *)parent sendActionsForControlEvents:UIControlEventTouchUpInside];
-                        NSLog(@"[QA-MOCK] Auto-click Cell Label!");
-                        return;
-                    }
-                    parent = parent.superview;
-                }
-            }
-        }
-        forceActivate(subview);
-    }
-}
-
-// Lớp 1: Đè bộ nhớ đệm
-%hook NSUserDefaults
-- (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = [defaultName lowercaseString];
-    if ([lower containsString:@"activat"] || [lower containsString:@"licens"] || [lower containsString:@"valid"] || [lower containsString:@"tigi"] || [lower containsString:@"purchas"]) {
-        return YES;
-    }
-    return %orig;
-}
-- (id)objectForKey:(NSString *)defaultName {
-    NSString *lower = [defaultName lowercaseString];
-    if ([lower containsString:@"activat"] || [lower containsString:@"licens"] || [lower containsString:@"valid"] || [lower containsString:@"tigi"] || [lower containsString:@"purchas"]) {
-        return @YES;
-    }
-    return %orig;
-}
-%end
-
-// Lớp 2: Lừa app là đang có kết nối Internet (Fix lỗi "Cần kết nối internet")
+// 1. Lừa app là đang có mạng (Bypass dòng chữ "Bạn cần kết nối internet")
 %hook SCNetworkReachability
 - (BOOL)getFlags:(SCNetworkReachabilityFlags *)flags {
     if (flags) {
-        *flags = kSCNetworkReachabilityFlagsReachable | kSCNetworkReachabilityFlagsConnectionRequired | kSCNetworkReachabilityFlagsConnectionOnTraffic;
+        *flags = kSCNetworkReachabilityFlagsReachable | kSCNetworkReachabilityFlagsConnectionRequired;
     }
     return YES;
 }
 %end
 
-// Lớp 3: Chặn API mạng, giả lập server trả về thành công
+// 2. Tự động bấm nút Kích hoạt (An toàn, không đụng vào Label)
+%hook UIButton
+- (void)layoutSubviews {
+    %orig;
+    NSString *title = [self titleForState:UIControlStateNormal];
+    if ([title containsString:@"Kích hoạt"] || [title containsString:@"Activate"]) {
+        // Dùng tag để tránh vòng lặp vô hạn gây crash
+        if (self.tag != 9999) {
+            self.tag = 9999;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self sendActionsForControlEvents:UIControlEventTouchUpInside];
+                NSLog(@"[QA-MOCK] Auto-clicked Kích hoạt button!");
+            });
+        }
+    }
+}
+%end
+
+// 3. Giả lập API trả về thành công
 %hook NSURLSession
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
     NSString *url = request.URL.absoluteString;
-    if ([url containsString:@"activate"] || [url containsString:@"license"] || [url containsString:@"tigi"]) {
+    if ([url containsString:@"activate"] || [url containsString:@"license"] || [url containsString:@"tigi"] || [url containsString:@"verify"]) {
         void (^fakeHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
             NSData *mockData = [@"{\"status\":\"success\",\"activated\":true,\"valid\":true,\"code\":200}" dataUsingEncoding:NSUTF8StringEncoding];
-            if (completionHandler) completionHandler(mockData, response, nil);
+            NSHTTPURLResponse *mockResponse = [[NSHTTPURLResponse alloc] initWithURL:request.URL statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:nil];
+            if (completionHandler) completionHandler(mockData, mockResponse, nil);
         };
         completionHandler = fakeHandler;
     }
@@ -76,37 +47,27 @@ static void forceActivate(UIView *view) {
 }
 %end
 
-// Lớp 4: Chặn popup thông báo
-%hook UIViewController
-- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
-    if ([viewControllerToPresent isKindOfClass:[UIAlertController class]]) {
-        UIAlertController *alert = (UIAlertController *)viewControllerToPresent;
-        if ([alert.title containsString:@"Chưa kích hoạt"] || [alert.message containsString:@"Kích hoạt Filza"]) {
-            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"is_activated"];
-            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"activated"];
-            [[NSUserDefaults standardUserDefaults] synchronize];
-            for (UIAlertAction *action in alert.actions) {
-                if ([action.title containsString:@"Kích hoạt"]) {
-                    void (^handler)(UIAlertAction *) = [action valueForKey:@"handler"];
-                    if (handler) handler(action);
-                    break;
-                }
-            }
-            return; 
-        }
+// 4. Đổi nội dung cái popup đòi kích hoạt
+%hook UIAlertController
++ (instancetype)alertControllerWithTitle:(NSString *)title message:(NSString *)message preferredStyle:(UIAlertControllerStyle)preferredStyle {
+    if ([title containsString:@"Chưa kích hoạt"] || [message containsString:@"Kích hoạt Filza"]) {
+        return %orig(@"Thành công", @"Đã kích hoạt Filza!", UIAlertControllerStyleAlert);
     }
-    %orig;
+    return %orig;
 }
 %end
 
-// Lớp 5: Tự động bấm nút Kích hoạt sau khi màn hình hiện ra 1 giây
-%hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        for (UIWindow *window in [UIApplication sharedApplication].windows) {
-            forceActivate(window);
+// 5. Đè kết quả JSON (để đảm bảo nếu nó parse JSON thì luôn là true)
+%hook NSJSONSerialization
++ (id)JSONObjectWithData:(NSData *)data options:(NSJSONReadingOptions)opt error:(NSError **)error {
+    if (data) {
+        NSString *str = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if ([str containsString:@"activate"] || [str containsString:@"valid"] || [str containsString:@"success"] || [str containsString:@"false"]) {
+            NSData *fakeData = [@"{\"status\":\"success\",\"activated\":true,\"valid\":true,\"success\":true,\"code\":200}" dataUsingEncoding:NSUTF8StringEncoding];
+            id result = %orig(fakeData, opt, error);
+            if (result) return result;
         }
-    });
+    }
+    return %orig;
 }
 %end
