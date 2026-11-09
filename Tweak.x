@@ -18,26 +18,56 @@
 }
 %end
 
-// 2. Can thiệp thẳng vào bảng Tùy chỉnh để đổi chữ "Dùng thử" thành "Vĩnh viễn"
-%hook TGPreferencesTableViewController
-- (id)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    id cell = %orig;
-    
-    // Quét tìm label trong cell và đổi chữ
-    for (UIView *view in [cell subviews]) {
-        if ([view isKindOfClass:[UILabel class]]) {
-            UILabel *lbl = (UILabel *)view;
-            if ([lbl.text containsString:@"Dùng thử"] || [lbl.text containsString:@"Chưa kích hoạt"]) {
-                lbl.text = @"Vĩnh viễn";
-                lbl.textColor = [UIColor systemBlueColor]; // Đổi màu xanh cho đẹp
-            }
+// 2. Đè kết quả JSON
+%hook NSJSONSerialization
++ (id)JSONObjectWithData:(NSData *)data options:(NSJSONReadingOptions)opt error:(NSError **)error {
+    if (data) {
+        NSString *str = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if ([str containsString:@"activate"] || [str containsString:@"valid"] || [str containsString:@"success"] || [str containsString:@"false"]) {
+            NSData *fakeData = [@"{\"status\":\"success\",\"activated\":true,\"valid\":true,\"success\":true,\"code\":200}" dataUsingEncoding:NSUTF8StringEncoding];
+            id result = %orig(fakeData, opt, error);
+            if (result) return result;
         }
     }
-    return cell;
+    return %orig;
 }
 %end
 
-// 3. Hook UILabel an toàn (Chỉ đổi chữ Thất bại, bỏ qua UITableViewLabel để không crash)
+// 3. Bắt trọn ổ NSUserDefaults (Bản quyền, kích hoạt)
+%hook NSUserDefaults
+- (BOOL)boolForKey:(NSString *)defaultName {
+    NSString *lower = [defaultName lowercaseString];
+    if ([lower containsString:@"activat"] || [lower containsString:@"licens"] || [lower containsString:@"valid"] || [lower containsString:@"tigi"] || [lower containsString:@"trial"]) {
+        return YES;
+    }
+    return %orig;
+}
+- (NSInteger)integerForKey:(NSString *)defaultName {
+    NSString *lower = [defaultName lowercaseString];
+    if ([lower containsString:@"activat"] || [lower containsString:@"licens"] || [lower containsString:@"valid"] || [lower containsString:@"tigi"] || [lower containsString:@"trial"]) {
+        return 1;
+    }
+    return %orig;
+}
+%end
+
+// 4. Hook UITableViewCell đổi chữ "DÙNG THỬ" thành "VĨNH VIỄN"
+%hook UITableViewCell
+- (void)layoutSubviews {
+    %orig;
+    for (UIView *view in self.contentView.subviews) {
+        if ([view isKindOfClass:[UILabel class]]) {
+            UILabel *lbl = (UILabel *)view;
+            if ([lbl.text containsString:@"DÙNG THỬ"] || [lbl.text containsString:@"Dùng thử"] || [lbl.text containsString:@"Chưa kích hoạt"]) {
+                lbl.text = @"VĨNH VIỄN";
+                lbl.textColor = [UIColor colorWithRed:0.0 green:0.5 blue:0.0 alpha:1.0]; // Màu xanh lá
+            }
+        }
+    }
+}
+%end
+
+// 5. Hook UILabel (Bỏ qua UITableViewLabel để không crash)
 %hook UILabel
 - (void)setText:(NSString *)text {
     if ([NSStringFromClass([self class]) isEqualToString:@"UITableViewLabel"]) {
@@ -52,7 +82,7 @@
 }
 %end
 
-// 4. Ép logic cốt lõi của Filza trả về True
+// 6. Quét các class TG* ép hàm logic trả về True
 %ctor {
     int numClasses = objc_getClassList(NULL, 0);
     Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
@@ -70,13 +100,23 @@
                 NSString *lowerMethod = [methodName lowercaseString];
                 const char *typeEncoding = method_getTypeEncoding(methods[j]);
                 
-                if (typeEncoding && (typeEncoding[0] == 'B' || typeEncoding[0] == 'c' || typeEncoding[0] == 'i' || typeEncoding[0] == 'q') && 
-                   ([lowerMethod containsString:@"activ"] || [lowerMethod containsString:@"licens"] || [lowerMethod containsString:@"valid"] || [lowerMethod containsString:@"serial"] || [lowerMethod containsString:@"trial"])) {
-                    
-                    IMP newImp = imp_implementationWithBlock(^NSInteger(id _self) {
-                        return 1;
-                    });
-                    method_setImplementation(methods[j], newImp);
+                if (typeEncoding) {
+                    if ((typeEncoding[0] == 'B' || typeEncoding[0] == 'c' || typeEncoding[0] == 'i' || typeEncoding[0] == 'q') && 
+                       ([lowerMethod containsString:@"activ"] || [lowerMethod containsString:@"licens"] || [lowerMethod containsString:@"valid"] || [lowerMethod containsString:@"serial"] || [lowerMethod containsString:@"trial"])) {
+                        
+                        IMP newImp = imp_implementationWithBlock(^NSInteger(id _self) {
+                            return 1;
+                        });
+                        method_setImplementation(methods[j], newImp);
+                    }
+                    else if (typeEncoding[0] == '@') {
+                        if ([lowerMethod containsString:@"licensestatus"] || [lowerMethod containsString:@"statustext"] || [lowerMethod containsString:@"getstate"]) {
+                             IMP newImp = imp_implementationWithBlock(^id(id _self) {
+                                return @"Vĩnh viễn";
+                            });
+                            method_setImplementation(methods[j], newImp);
+                        }
+                    }
                 }
             }
             free(methods);
@@ -85,12 +125,18 @@
     free(classes);
 }
 
-// 5. Chặn popup báo lỗi, thay bằng thông báo thành công
-%hook UIAlertController
-+ (instancetype)alertControllerWithTitle:(NSString *)title message:(NSString *)message preferredStyle:(UIAlertControllerStyle)preferredStyle {
-    if ([title containsString:@"Thất bại"] || [message containsString:@"Thất bại"] || [message containsString:@"Không thể kích hoạt"]) {
-        return %orig(@"Thành công", @"Đã kích hoạt Filza vĩnh viễn!", UIAlertControllerStyleAlert);
+// 7. Tự động bấm nút Kích hoạt
+%hook UIButton
+- (void)layoutSubviews {
+    %orig;
+    NSString *title = [self titleForState:UIControlStateNormal];
+    if ([title containsString:@"Kích hoạt"] || [title containsString:@"Activate"]) {
+        if (self.tag != 9999) {
+            self.tag = 9999;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self sendActionsForControlEvents:UIControlEventTouchUpInside];
+            });
+        }
     }
-    return %orig;
 }
 %end
