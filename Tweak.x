@@ -2,23 +2,40 @@
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
 
-// Hàm C độc lập để quét và bấm nút (Tránh lỗi missing selector)
+// Hàm C đệ quy quét mọi ngóc ngách của UIView
 static void scanAndClickButton(UIView *view) {
+    if (!view) return;
     for (UIView *subview in view.subviews) {
+        // 1. Nếu là UIButton
         if ([subview isKindOfClass:[UIButton class]]) {
             UIButton *btn = (UIButton *)subview;
             NSString *title = [btn titleForState:UIControlStateNormal];
-            
             if ([title containsString:@"Kích hoạt"] || [title containsString:@"Activate"]) {
                 [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
-                NSLog(@"[QA-MOCK] Tự động bấm nút Kích hoạt!");
+                NSLog(@"[QA-MOCK] Đã tự động bấm nút Kích hoạt!");
+                return;
+            }
+        } 
+        // 2. Nếu là UILabel nằm trong một UIControl (nút custom)
+        else if ([subview isKindOfClass:[UILabel class]]) {
+            UILabel *lbl = (UILabel *)subview;
+            if ([lbl.text containsString:@"Kích hoạt"] || [lbl.text containsString:@"Activate"]) {
+                UIView *parent = lbl.superview;
+                while (parent) {
+                    if ([parent isKindOfClass:[UIControl class]]) {
+                        [(UIControl *)parent sendActionsForControlEvents:UIControlEventTouchUpInside];
+                        NSLog(@"[QA-MOCK] Đã tự động bấm qua UILabel!");
+                        return;
+                    }
+                    parent = parent.superview;
+                }
             }
         }
         scanAndClickButton(subview);
     }
 }
 
-// Lớp 1: Đè toàn bộ kết quả đọc từ bộ nhớ đệm (NSUserDefaults)
+// Lớp 1: Đè bộ nhớ đệm
 %hook NSUserDefaults
 - (BOOL)boolForKey:(NSString *)defaultName {
     NSString *lower = [defaultName lowercaseString];
@@ -66,18 +83,7 @@ static void scanAndClickButton(UIView *view) {
 }
 %end
 
-// Lớp 4: TỰ ĐỘNG BẤM NÚT KÍCH HOẠT
-%hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        scanAndClickButton(self.view);
-    });
-}
-%end
-
-// Lớp 5: Đổi text đỏ thành xanh và tự động đóng popup
+// Lớp 4: Đổi text đỏ thành xanh và tự động đóng popup
 %hook UILabel
 - (void)setText:(NSString *)text {
     if ([text containsString:@"Thất bại"] || [text containsString:@"Không thể kích hoạt"] || [text containsString:@"Failed"]) {
@@ -90,7 +96,6 @@ static void scanAndClickButton(UIView *view) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIWindow *currentWindow = self.window;
             if (!currentWindow) return;
-            
             UIViewController *rootVC = currentWindow.rootViewController;
             if (rootVC.presentedViewController) {
                 [rootVC dismissViewControllerAnimated:YES completion:nil];
@@ -101,3 +106,14 @@ static void scanAndClickButton(UIView *view) {
     %orig;
 }
 %end
+
+// Lớp 5: Mắt thần quét toàn bộ cửa sổ mỗi 0.5 giây
+%ctor {
+    [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer * _Nonnull timer) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            for (UIWindow *window in [UIApplication sharedApplication].windows) {
+                scanAndClickButton(window);
+            }
+        });
+    }];
+}
