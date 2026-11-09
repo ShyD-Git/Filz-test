@@ -2,6 +2,21 @@
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
 
+// Khai báo Interface đầy đủ để compiler đéo bắt bẻ
+@interface NewActivationViewController : UIViewController
+- (void)activate:(id)arg1;
+- (void)activateFromURL:(id)arg1;
+@end
+
+@interface TGRootFileManager : NSObject
+- (id)fetchActivationSignature;
+@end
+
+@interface TGPreferencesTableViewController : UITableViewController
+- (id)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath;
+- (void)updateLicense;
+@end
+
 // 1. Chặn hàm kích hoạt, giả lập thành công
 %hook NewActivationViewController
 - (void)activate:(id)arg1 {
@@ -31,7 +46,6 @@
 - (id)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     id cell = %orig;
     
-    // Quét tìm UILabel để đổi chữ
     for (UIView *view in [cell subviews]) {
         if ([view isKindOfClass:[UILabel class]]) {
             UILabel *lbl = (UILabel *)view;
