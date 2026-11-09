@@ -43,7 +43,6 @@
         Class cls = classes[i];
         NSString *className = NSStringFromClass(cls);
         
-        // Chỉ quét các class của Filza (thường có tiền tố TG)
         if ([className hasPrefix:@"TG"] || [className containsString:@"Preferences"]) {
             unsigned int methodCount;
             Method *methods = class_copyMethodList(cls, &methodCount);
@@ -51,7 +50,6 @@
                 NSString *methodName = NSStringFromSelector(method_getName(methods[j]));
                 NSString *lowerMethod = [methodName lowercaseString];
                 
-                // Nếu hàm trả về bool và có chữ check bản quyền
                 const char *typeEncoding = method_getTypeEncoding(methods[j]);
                 if ((typeEncoding[0] == 'c' || typeEncoding[0] == 'B') && 
                    ([lowerMethod containsString:@"activ"] || [lowerMethod containsString:@"licens"] || [lowerMethod containsString:@"valid"] || [lowerMethod containsString:@"trial"] || [lowerMethod containsString:@"purchas"])) {
@@ -67,7 +65,6 @@
     }
     free(classes);
 }
-%end
 
 // 4. Tự động đổi chữ "Thất bại" thành "Thành công" trong UIAlertController
 %hook UIAlertController
