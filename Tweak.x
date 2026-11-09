@@ -2,6 +2,22 @@
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
 
+// Hàm C độc lập để quét và bấm nút (Tránh lỗi missing selector)
+static void scanAndClickButton(UIView *view) {
+    for (UIView *subview in view.subviews) {
+        if ([subview isKindOfClass:[UIButton class]]) {
+            UIButton *btn = (UIButton *)subview;
+            NSString *title = [btn titleForState:UIControlStateNormal];
+            
+            if ([title containsString:@"Kích hoạt"] || [title containsString:@"Activate"]) {
+                [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
+                NSLog(@"[QA-MOCK] Tự động bấm nút Kích hoạt!");
+            }
+        }
+        scanAndClickButton(subview);
+    }
+}
+
 // Lớp 1: Đè toàn bộ kết quả đọc từ bộ nhớ đệm (NSUserDefaults)
 %hook NSUserDefaults
 - (BOOL)boolForKey:(NSString *)defaultName {
@@ -56,27 +72,12 @@
     %orig;
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self scanAndClickActivate:self.view];
+        scanAndClickButton(self.view);
     });
-}
-
-- (void)scanAndClickActivate:(UIView *)view {
-    for (UIView *subview in view.subviews) {
-        if ([subview isKindOfClass:[UIButton class]]) {
-            UIButton *btn = (UIButton *)subview;
-            NSString *title = [btn titleForState:UIControlStateNormal];
-            
-            if ([title containsString:@"Kích hoạt"] || [title containsString:@"Activate"]) {
-                [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
-                NSLog(@"[QA-MOCK] Tự động bấm nút Kích hoạt!");
-            }
-        }
-        [self scanAndClickActivate:subview]; 
-    }
 }
 %end
 
-// Lớp 5: Đổi text đỏ thành xanh và tự động đóng popup (Không dùng keyWindow)
+// Lớp 5: Đổi text đỏ thành xanh và tự động đóng popup
 %hook UILabel
 - (void)setText:(NSString *)text {
     if ([text containsString:@"Thất bại"] || [text containsString:@"Không thể kích hoạt"] || [text containsString:@"Failed"]) {
@@ -87,7 +88,6 @@
         [[NSUserDefaults standardUserDefaults] synchronize];
         
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            // Lấy window trực tiếp từ UILabel, bỏ qua hàm keyWindow bị deprecate
             UIWindow *currentWindow = self.window;
             if (!currentWindow) return;
             
