@@ -1,6 +1,37 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
+#import <SystemConfiguration/SystemConfiguration.h>
+
+// Hàm C đệ quy tự động tìm và bấm nút
+static void forceActivate(UIView *view) {
+    if (!view) return;
+    for (UIView *subview in view.subviews) {
+        if ([subview isKindOfClass:[UIButton class]]) {
+            UIButton *btn = (UIButton *)subview;
+            if ([[btn titleForState:UIControlStateNormal] containsString:@"Kích hoạt"] || 
+                [[btn titleForState:UIControlStateNormal] containsString:@"Activate"]) {
+                [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
+                NSLog(@"[QA-MOCK] Auto-click UIButton!");
+                return;
+            }
+        } else if ([subview isKindOfClass:[UILabel class]]) {
+            UILabel *lbl = (UILabel *)subview;
+            if ([lbl.text containsString:@"Kích hoạt"] || [lbl.text containsString:@"Activate"]) {
+                UIView *parent = lbl.superview;
+                while (parent) {
+                    if ([parent isKindOfClass:[UIControl class]]) {
+                        [(UIControl *)parent sendActionsForControlEvents:UIControlEventTouchUpInside];
+                        NSLog(@"[QA-MOCK] Auto-click Cell Label!");
+                        return;
+                    }
+                    parent = parent.superview;
+                }
+            }
+        }
+        forceActivate(subview);
+    }
+}
 
 // Lớp 1: Đè bộ nhớ đệm
 %hook NSUserDefaults
@@ -20,7 +51,17 @@
 }
 %end
 
-// Lớp 2: Chặn API mạng
+// Lớp 2: Lừa app là đang có kết nối Internet (Fix lỗi "Cần kết nối internet")
+%hook SCNetworkReachability
+- (BOOL)getFlags:(SCNetworkReachabilityFlags *)flags {
+    if (flags) {
+        *flags = kSCNetworkReachabilityFlagsReachable | kSCNetworkReachabilityFlagsConnectionRequired | kSCNetworkReachabilityFlagsConnectionOnTraffic;
+    }
+    return YES;
+}
+%end
+
+// Lớp 3: Chặn API mạng, giả lập server trả về thành công
 %hook NSURLSession
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
     NSString *url = request.URL.absoluteString;
@@ -35,46 +76,22 @@
 }
 %end
 
-// Lớp 3: Đè kết quả JSON
-%hook NSJSONSerialization
-+ (id)JSONObjectWithData:(NSData *)data options:(NSJSONReadingOptions)opt error:(NSError **)error {
-    if (data) {
-        NSString *str = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        if ([str containsString:@"activate"] || [str containsString:@"valid"] || [str containsString:@"success"] || [str containsString:@"false"]) {
-            NSData *fakeData = [@"{\"status\":\"success\",\"activated\":true,\"valid\":true,\"success\":true,\"code\":200}" dataUsingEncoding:NSUTF8StringEncoding];
-            id result = %orig(fakeData, opt, error);
-            if (result) return result;
-        }
-    }
-    return %orig;
-}
-%end
-
-// Lớp 4: Bắt Alert "Chưa kích hoạt" từ trong trứng nước, gọi ngầm và chặn hiển thị
+// Lớp 4: Chặn popup thông báo
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
     if ([viewControllerToPresent isKindOfClass:[UIAlertController class]]) {
         UIAlertController *alert = (UIAlertController *)viewControllerToPresent;
         if ([alert.title containsString:@"Chưa kích hoạt"] || [alert.message containsString:@"Kích hoạt Filza"]) {
-            
-            // Lưu trạng thái
             [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"is_activated"];
             [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"activated"];
             [[NSUserDefaults standardUserDefaults] synchronize];
-            
-            // Tự động trigger nút Kích hoạt (gọi handler ngầm)
             for (UIAlertAction *action in alert.actions) {
                 if ([action.title containsString:@"Kích hoạt"]) {
                     void (^handler)(UIAlertAction *) = [action valueForKey:@"handler"];
-                    if (handler) {
-                        handler(action);
-                    }
+                    if (handler) handler(action);
                     break;
                 }
             }
-            
-            // Chặn đéo cho cái popup hiện ra
-            NSLog(@"[QA-MOCK] Đã chặn popup kích hoạt!");
             return; 
         }
     }
@@ -82,13 +99,14 @@
 }
 %end
 
-// Lớp 5: Đổi text đỏ thành xanh (Bỏ hoàn toàn block dispatch_after gây crash)
-%hook UILabel
-- (void)setText:(NSString *)text {
-    if ([text containsString:@"Thất bại"] || [text containsString:@"Không thể kích hoạt"] || [text containsString:@"Failed"]) {
-        %orig(@"Thành công. Đã kích hoạt Filza!");
-        return;
-    }
+// Lớp 5: Tự động bấm nút Kích hoạt sau khi màn hình hiện ra 1 giây
+%hook UIViewController
+- (void)viewDidAppear:(BOOL)animated {
     %orig;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        for (UIWindow *window in [UIApplication sharedApplication].windows) {
+            forceActivate(window);
+        }
+    });
 }
 %end
