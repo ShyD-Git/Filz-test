@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <StoreKit/StoreKit.h>
 
 static NSString *qaLogPath() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
@@ -35,7 +36,53 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Bắt Dữ Liệu Mạng (Bọc @try @catch chống crash) ---
+// --- 1. Chặn ghi đè Premium = false vào UserDefaults ---
+%hook NSUserDefaults
+- (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
+    NSString *lower = defaultName.lowercaseString;
+    
+    if ([lower containsString:@"premium"] || [lower containsString:@"pro"] || 
+        [lower containsString:@"active"] || [lower containsString:@"sub"] || 
+        [lower containsString:@"vip"] || [lower containsString:@"paid"] ||
+        [lower containsString:@"unlocked"]) {
+        qaLog(@"🛑 Chặn setBool: %@ = %d -> Ép thành YES", defaultName, value);
+        %orig(YES, defaultName);
+        return;
+    }
+    
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
+        qaLog(@"🛑 Chặn setBool: %@ = %d -> Ép thành NO", defaultName, value);
+        %orig(NO, defaultName);
+        return;
+    }
+    %orig;
+}
+%end
+
+// --- 2. Fake StoreKit 1 (Giao dịch mua thành công) ---
+%hook SKPaymentQueue
+- (void)addPayment:(SKPayment *)payment {
+    qaLog(@"🛒 Chặn addPayment. Giả lập mua thành công!");
+    
+    // Tạo một fake transaction
+    SKPaymentTransaction *transaction = [[objc_getClass("SKPaymentTransaction") alloc] init];
+    [transaction setValue:payment forKey:@"payment"];
+    [transaction setValue:@(SKPaymentTransactionStatePurchased) forKey:@"transactionState"];
+    [transaction setValue:[NSUUID UUID] forKey:@"transactionIdentifier"];
+    [transaction setValue:[NSDate date] forKey:@"transactionDate"];
+    
+    // Báo cho app biết là đã mua thành công
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        for (id observer in [[SKPaymentQueue defaultQueue] valueForKey:@"_observers"]) {
+            if ([observer respondsToSelector:@selector(paymentQueue:updatedTransactions:)]) {
+                [observer paymentQueue:[SKPaymentQueue defaultQueue] updatedTransactions:@[transaction]];
+            }
+        }
+    });
+}
+%end
+
+// --- 3. Bắt Mạng (Sửa JSON trả về) ---
 %hook NSURLSession
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
     
@@ -46,7 +93,8 @@ static void qaLog(NSString *format, ...) {
             
             if ([urlStr containsString:@"session"] || [urlStr containsString:@"user"] || 
                 [urlStr containsString:@"premium"] || [urlStr containsString:@"activate"] || 
-                [urlStr containsString:@"temp"]) {
+                [urlStr containsString:@"receipt"] || [urlStr containsString:@"verify"] ||
+                [urlStr containsString:@"mailbox"]) {
                 
                 qaLog(@"📡 API RAW: %@\nBODY: %@", urlStr, jsonStr);
                 
@@ -59,15 +107,14 @@ static void qaLog(NSString *format, ...) {
                         [mutStr replaceOccurrencesOfString:@"\"active\":false" withString:@"\"active\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
                         [mutStr replaceOccurrencesOfString:@"\"isActive\":false" withString:@"\"isActive\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
                         [mutStr replaceOccurrencesOfString:@"\"subscribed\":false" withString:@"\"subscribed\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                        [mutStr replaceOccurrencesOfString:@"\"is_pro\":false" withString:@"\"is_pro\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
                         
                         if (![mutStr isEqualToString:jsonStr]) {
-                            qaLog(@"✂️ Đã đổi cờ Premium thành TRUE");
+                            qaLog(@"✂️ Đã đổi cờ Premium thành TRUE trong response");
                             data = [mutStr dataUsingEncoding:NSUTF8StringEncoding];
                         }
                     }
-                } @catch (NSException *e) {
-                    qaLog(@"❌ Lỗi chuyển đổi JSON: %@", e.reason);
-                }
+                } @catch (NSException *e) {}
             }
         }
         if (completionHandler) {
@@ -79,51 +126,17 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
-// --- 2. Hook NSUserDefaults (Chỉ hook boolForKey, ĐÉO hook objectForKey) ---
-%hook NSUserDefaults
-- (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        return NO;
-    }
-    if ([lower containsString:@"premium"] || [lower containsString:@"pro"] || 
-        [lower containsString:@"active"] || [lower containsString:@"sub"] || 
-        [lower containsString:@"vip"] || [lower containsString:@"paid"] ||
-        [lower containsString:@"unlocked"]) {
-        qaLog(@"✅ Ép TRUE Defaults: %@", defaultName);
-        return YES;
-    }
-    return %orig;
+// --- 4. Chặn Swift PurchaseCoordinator (Nếu dùng StoreKit 2) ---
+%hook TempMail.PurchaseCoordinator
+- (void)purchaseProduct:(id)product {
+    qaLog(@"🛒 Chặn Swift PurchaseCoordinator");
 }
-%end
-
-// --- 3. Xử lý nút bấm Paywall (Tự động gọi Restore Purchases) ---
-%hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    NSString *clsName = NSStringFromClass([self class]).lowercaseString;
-    if ([clsName containsString:@"trypremium"]) {
-        qaLog(@"🚀 Đang ở màn hình Paywall, tìm nút Restore...");
-        
-        // Quét tìm nút Khôi phục để bấm hộ
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            for (UIView *view in self.view.subviews) {
-                if ([view isKindOfClass:[UIButton class]]) {
-                    UIButton *btn = (UIButton *)view;
-                    if ([btn.titleLabel.text containsString:@"Khôi phục"] || 
-                        [btn.titleLabel.text containsString:@"Restore"]) {
-                        qaLog(@"👉 Đã tìm thấy nút Khôi phục, tự động bấm!");
-                        [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
-                        break;
-                    }
-                }
-            }
-        });
-    }
+- (void)restorePurchases {
+    qaLog(@"🛒 Chặn Swift restorePurchases");
 }
 %end
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Safe Network & No ObjectForKey)");
+    qaLog(@"🚀 QATestingUtils Loaded (Fake StoreKit)");
 }
