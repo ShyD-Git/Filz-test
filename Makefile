@@ -1,12 +1,11 @@
-TARGET := iphone:clang:latest:15.0
-ARCHS := arm64 arm64e
-INSTALL_TARGET_PROCESSES = Filza
+ARCHS = arm64 arm64e
+TARGET = iphone:clang:latest:15.0
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = FilzaQAMock
-
-FilzaQAMock_FILES = Tweak.x
-FilzaQAMock_CFLAGS = -fobjc-arc -Wno-error=deprecated-declarations
+TWEAK_NAME = QATestingUtils
+QATestingUtils_FILES = Tweak.x
+QATestingUtils_CFLAGS = -fobjc-arc
+QATestingUtils_FRAMEWORKS = UIKit Foundation StoreKit
 
 include $(THEOS_MAKE_PATH)/tweak.mk
