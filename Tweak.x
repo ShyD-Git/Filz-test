@@ -35,53 +35,32 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Múc JSON trả về từ API (Ép cờ Premium) ---
-%hook NSJSONSerialization
-+ (id)JSONObjectWithData:(NSData *)data options:(NSJSONReadingOptions)opt error:(NSError **)error {
-    id obj = %orig;
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        NSMutableDictionary *dict = [obj mutableCopy];
-        BOOL changed = NO;
-        
-        // Quét các key phổ biến của app Premium
-        NSArray *keys = @[@"premium", @"is_premium", @"isPremium", @"active", @"isActive", @"subscription", @"isSubscribed", @"trial", @"isTrial"];
-        
-        for (NSString *key in keys) {
-            if (dict[key] != nil) {
-                dict[key] = @YES;
-                changed = YES;
+// --- 1. Bắt toàn bộ JSON trả về từ Server ---
+%hook NSURLSession
+- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
+    
+    void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (data) {
+            NSString *jsonString = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            // Chỉ log những API có chữ session, user, premium, hoặc response ngắn
+            if ([request.URL.absoluteString containsString:@"session"] || 
+                [request.URL.absoluteString containsString:@"user"] || 
+                [request.URL.absoluteString containsString:@"premium"] ||
+                [request.URL.absoluteString containsString:@"activation"]) {
+                
+                qaLog(@"🌐 API RESPONSE: %@\nDATA: %@", request.URL.absoluteString, jsonString);
             }
         }
-        
-        if (changed) {
-            qaLog(@"📦 Đã can thiệp JSON API: %@", dict);
-            return dict;
+        if (completionHandler) {
+            completionHandler(data, response, error);
         }
-    }
-    return obj;
+    };
+    
+    return %orig(request, wrappedCompletion);
 }
 %end
 
-// --- 2. Hook NSUserDefaults (Cờ Trial & Premium local) ---
-%hook NSUserDefaults
-- (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"] || [lower containsString:@"wasused"]) {
-        qaLog(@"✅ Ép FALSE Defaults: %@", defaultName);
-        return NO;
-    }
-    if ([lower containsString:@"premium"] || [lower containsString:@"pro"] || 
-        [lower containsString:@"sub"] || [lower containsString:@"vip"] || 
-        [lower containsString:@"paid"] || [lower containsString:@"unlocked"] ||
-        [lower containsString:@"active"]) {
-        qaLog(@"✅ Ép TRUE Defaults: %@", defaultName);
-        return YES;
-    }
-    return %orig;
-}
-%end
-
-// --- 3. Chặn bảng thanh toán ---
+// --- 2. Chặn bảng thanh toán ---
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
     NSString *clsName = NSStringFromClass([viewControllerToPresent class]).lowercaseString;
@@ -94,33 +73,45 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
-// --- 4. Dump Thuộc tính của Class Lõi (Xem nó giấu cờ ở đâu) ---
-static void dumpProperties() {
+// --- 3. Ép cờ Trial về FALSE ---
+%hook NSUserDefaults
+- (BOOL)boolForKey:(NSString *)defaultName {
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+
+// --- 4. Lục lọi Class Swift (Dump Methods) ---
+static void dumpMethods() {
     NSArray *classesToDump = @[
         @"TempMailPremiumAPI.UserSessionResultClass",
         @"TempMailPremiumAPI.UserSessionResponseParser",
-        @"TempMail.ApplicationCoordinator"
+        @"TempMailPremiumAPI.APIUserSessionRequest"
     ];
     
     for (NSString *clsName in classesToDump) {
         Class cls = objc_getClass([clsName UTF8String]);
         if (!cls) continue;
         
-        qaLog(@"🔍 Dump Properties của %@:", clsName);
+        qaLog(@"🔍 Dump Methods của %@:", clsName);
         unsigned int count;
-        objc_property_t *props = class_copyPropertyList(cls, &count);
+        Method *methods = class_copyMethodList(cls, &count);
         for (unsigned int i = 0; i < count; i++) {
-            qaLog(@"   🔑 Property: %s", property_getName(props[i]));
+            SEL sel = method_getName(methods[i]);
+            qaLog(@"   🔑 Method: %s", sel_getName(sel));
         }
-        free(props);
+        free(methods);
     }
 }
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (JSON Interceptor)");
+    qaLog(@"🚀 QATestingUtils Loaded (Network & Method Dumper)");
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        dumpProperties();
+        dumpMethods();
     });
 }
