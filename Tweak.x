@@ -36,71 +36,64 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Sửa Logic Ép Bool (Trial = NO, Premium = YES) ---
-%hook NSUserDefaults
-- (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
+// --- 1. Giả Lập App Store Receipt ---
+%hook NSBundle
+- (NSURL *)appStoreReceiptURL {
+    NSURL *originalURL = %orig;
+    if (originalURL) return originalURL;
     
-    // 1. Phải check trial/expired TRƯỚC ĐỂ NÓ TRẢ VỀ FALSE
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        qaLog(@"✅ Ép FALSE (Trial): %@", defaultName);
-        return NO;
+    // Tạo file receipt giả nếu chưa có
+    NSString *docsDir = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *fakeReceiptPath = [docsDir stringByAppendingPathComponent:@"fake_receipt"];
+    
+    if (![[NSFileManager defaultManager] fileExistsAtPath:fakeReceiptPath]) {
+        // Một chuỗi JSON giả lập App Store Receipt
+        NSString *fakeReceiptJSON = @"{\"status\":0,\"environment\":\"Production\",\"receipt\":{\"bundle_id\":\"com.tempmail.ios\",\"in_app\":[{\"product_id\":\"com.tempmail.ios.premium.year\",\"purchase_date_ms\":\"1700000000000\"}]}}";
+        [fakeReceiptJSON writeToFile:fakeReceiptPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        qaLog(@"🛠 Đã tạo fake receipt tại: %@", fakeReceiptPath);
     }
     
-    // 2. Ép các cờ Premium
-    if ([lower containsString:@"paid"] || 
-        [lower containsString:@"premium"] || 
-        [lower containsString:@"enabled"] || 
-        [lower containsString:@"pro"]) {
-        qaLog(@"✅ Ép TRUE (Premium): %@", defaultName);
-        return YES;
-    }
-    
-    return %orig;
-}
-
-- (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        %orig(NO, defaultName);
-        return;
-    }
-    
-    if ([lower containsString:@"paid"] || 
-        [lower containsString:@"premium"] || 
-        [lower containsString:@"enabled"] || 
-        [lower containsString:@"pro"]) {
-        %orig(YES, defaultName);
-        return;
-    }
-    
-    %orig;
+    return [NSURL fileURLWithPath:fakeReceiptPath];
 }
 %end
 
-// --- 2. Fake StoreKit 1 (Dự phòng) ---
-%hook SKPaymentQueue
-- (void)addPayment:(SKPayment *)payment {
-    qaLog(@"🛒 Chặn addPayment. Fake mua thành công!");
-    
-    SKPaymentTransaction *transaction = [[objc_getClass("SKPaymentTransaction") alloc] init];
-    [transaction setValue:payment forKey:@"payment"];
-    [transaction setValue:@(SKPaymentTransactionStatePurchased) forKey:@"transactionState"];
-    [transaction setValue:[NSUUID UUID] forKey:@"transactionIdentifier"];
-    [transaction setValue:[NSDate date] forKey:@"transactionDate"];
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        for (id observer in [[SKPaymentQueue defaultQueue] valueForKey:@"_observers"]) {
-            if ([observer respondsToSelector:@selector(paymentQueue:updatedTransactions:)]) {
-                [observer paymentQueue:[SKPaymentQueue defaultQueue] updatedTransactions:@[transaction]];
-            }
-        }
-    });
+// --- 2. Chặn triệt để Swift Paywall Controller ---
+static void hidePaywallView(UIViewController *self) {
+    NSString *clsName = NSStringFromClass([self class]).lowercaseString;
+    if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
+        qaLog(@"🛑 Phát hiện Paywall, đang tắt...");
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self dismissViewControllerAnimated:YES completion:^{
+                // Sau khi tắt, gọi hàm mua hoặc ép cờ Premium
+                qaLog(@"✅ Đã tắt Paywall.");
+            }];
+        });
+    }
+}
+
+%hook UIViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    hidePaywallView(self);
+}
+%end
+
+// --- 3. Sửa logic UserDefaults (Chỉ ép Bool, không can thiệp String) ---
+%hook NSUserDefaults
+- (BOOL)boolForKey:(NSString *)defaultName {
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
+        return NO;
+    }
+    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"enabled"] || [lower containsString:@"pro"]) {
+        return YES;
+    }
+    return %orig;
 }
 %end
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Fixed Logic)");
+    qaLog(@"🚀 QATestingUtils Loaded (Fake Receipt & Auto Dismiss)");
 }
