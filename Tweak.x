@@ -126,17 +126,7 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
-// --- 4. Chặn Swift PurchaseCoordinator (Nếu dùng StoreKit 2) ---
-%hook TempMail.PurchaseCoordinator
-- (void)purchaseProduct:(id)product {
-    qaLog(@"🛒 Chặn Swift PurchaseCoordinator");
-}
-- (void)restorePurchases {
-    qaLog(@"🛒 Chặn Swift restorePurchases");
-}
-%end
-
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Fake StoreKit)");
+    qaLog(@"🚀 QATestingUtils Loaded (Fake StoreKit & Network)");
 }
