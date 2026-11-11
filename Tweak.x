@@ -36,39 +36,57 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Đấm Chết Cờ Premium Trong UserDefaults ---
+// --- 1. Đấm Sập Toàn Bộ Cờ Premium Trong UserDefaults ---
 %hook NSUserDefaults
-- (BOOL)boolForKey:(NSString *)defaultName {
-    if ([defaultName isEqualToString:@"paid_v2_user_enabled"] || 
-        [defaultName isEqualToString:@"paid_v2"] || 
-        [defaultName isEqualToString:@"paid"]) {
-        qaLog(@"✅ Ép TRUE boolForKey: %@", defaultName);
-        return YES;
-    }
-    if ([defaultName containsString:@"trialused"] || [defaultName containsString:@"expired"]) {
-        return NO;
-    }
-    return %orig;
-}
-
 - (id)objectForKey:(NSString *)defaultName {
-    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
-        qaLog(@"✅ Ép @YES objectForKey: %@", defaultName);
-        return @YES;
-    }
-    if ([defaultName isEqualToString:@"paid"] || [defaultName isEqualToString:@"paid_v2"]) {
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower hasPrefix:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"keypremium"]) {
+        if ([lower containsString:@"timestamp"]) {
+            qaLog(@"✅ Ép Object Timestamp: %@", defaultName);
+            return @"2099-12-31 23:59:59 +0000";
+        }
+        if ([lower containsString:@"enabled"]) {
+            qaLog(@"✅ Ép Object BOOL: %@", defaultName);
+            return @YES;
+        }
+        qaLog(@"✅ Ép Object UUID: %@", defaultName);
         return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
     }
     return %orig;
 }
 
+- (NSString *)stringForKey:(NSString *)defaultName {
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower hasPrefix:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"keypremium"]) {
+        if ([lower containsString:@"timestamp"]) {
+            qaLog(@"✅ Ép String Timestamp: %@", defaultName);
+            return @"2099-12-31 23:59:59 +0000";
+        }
+        qaLog(@"✅ Ép String UUID: %@", defaultName);
+        return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
+    }
+    return %orig;
+}
+
+- (BOOL)boolForKey:(NSString *)defaultName {
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower hasPrefix:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"keypremium"]) {
+        qaLog(@"✅ Ép Bool: %@", defaultName);
+        return YES;
+    }
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
+        return NO;
+    }
+    return %orig;
+}
+
 - (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
-    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
-        qaLog(@"🛑 Chặn ghi đè, ép YES: %@", defaultName);
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower hasPrefix:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"keypremium"]) {
         %orig(YES, defaultName);
         return;
     }
-    if ([defaultName containsString:@"trialused"]) {
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
         %orig(NO, defaultName);
         return;
     }
@@ -76,20 +94,7 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
-// --- 2. Chặn Cửa Sổ Paywall (Nếu nó cố tình hiện) ---
-%hook UIViewController
-- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
-    NSString *clsName = NSStringFromClass([viewControllerToPresent class]).lowercaseString;
-    if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
-        qaLog(@"🛑 Chặn Paywall: %@", clsName);
-        if (completion) completion();
-        return;
-    }
-    %orig;
-}
-%end
-
-// --- 3. Fake StoreKit 1 (Đề phòng) ---
+// --- 2. Fake StoreKit 1 (Đề phòng app gọi mua) ---
 %hook SKPaymentQueue
 - (void)addPayment:(SKPayment *)payment {
     qaLog(@"🛒 Chặn addPayment. Fake mua thành công!");
@@ -112,5 +117,5 @@ static void qaLog(NSString *format, ...) {
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Ultimate UserDefaults Kill)");
+    qaLog(@"🚀 QATestingUtils Loaded (Final UserDefaults Override)");
 }
