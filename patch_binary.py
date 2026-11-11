@@ -18,25 +18,30 @@ def patch_binary(binary_path):
     for binary in fat:
         print(f"[*] Processing architecture: {binary.header.cpu_type}")
         
+        # DUMP TẤT CẢ SYMBOL CÓ CHỮ PREMIUM HOẶC TEMPMAIL
+        print("[*] Dumping symbols...")
         for symbol in binary.symbols:
-            if any(k in symbol.name for k in ["Premium", "Transaction", "isActive", "Subscription", "isPro"]):
+            if any(k in symbol.name for k in ["Premium", "Transaction", "isActive", "Subscription", "isPro", "TempMail", "paid"]):
+                print(f"   [FOUND] Symbol: {symbol.name} at {hex(symbol.value)}")
+                
                 if symbol.value >= binary.imagebase:
                     try:
                         bytes_at_addr = bytes(binary.get_content_from_virtual_address(symbol.value, 4))
+                        print(f"      -> Bytes: {bytes_at_addr.hex()}")
                         
                         if bytes_at_addr == MOV_W0_0:
                             binary.patch_address(symbol.value, MOV_W0_1)
                             print(f"    [!] Patched {symbol.name} to return TRUE")
                             patched_count += 1
                     except Exception as e:
-                        pass
+                        print(f"      -> Error reading bytes: {e}")
 
     if patched_count > 0:
         builder = lief.MachO.Builder(fat)
         builder.write(binary_path)
         print(f"[*] Patching complete. Modified {patched_count} targets.")
     else:
-        print("[!] Cảnh báo: Không tìm thấy hàm nào cần vá. File có thể đã bị xáo trộn mã máy.")
+        print("[!] CẢNH BÁO: Không tìm thấy hàm nào cần vá.")
 
 if __name__ == "__main__":
     target_binary = "Payload/TempMail.app/TempMail"
