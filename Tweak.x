@@ -36,7 +36,7 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Chặn ghi đè Premium = false vào UserDefaults ---
+// --- 1. Chặn ghi đè Premium vào UserDefaults ---
 %hook NSUserDefaults
 - (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
     NSString *lower = defaultName.lowercaseString;
@@ -45,13 +45,13 @@ static void qaLog(NSString *format, ...) {
         [lower containsString:@"active"] || [lower containsString:@"sub"] || 
         [lower containsString:@"vip"] || [lower containsString:@"paid"] ||
         [lower containsString:@"unlocked"]) {
-        qaLog(@"🛑 Chặn setBool: %@ = %d -> Ép thành YES", defaultName, value);
+        qaLog(@"🛑 Chặn setBool: %@ -> Ép YES", defaultName);
         %orig(YES, defaultName);
         return;
     }
     
     if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        qaLog(@"🛑 Chặn setBool: %@ = %d -> Ép thành NO", defaultName, value);
+        qaLog(@"🛑 Chặn setBool: %@ -> Ép NO", defaultName);
         %orig(NO, defaultName);
         return;
     }
@@ -64,14 +64,12 @@ static void qaLog(NSString *format, ...) {
 - (void)addPayment:(SKPayment *)payment {
     qaLog(@"🛒 Chặn addPayment. Giả lập mua thành công!");
     
-    // Tạo một fake transaction
     SKPaymentTransaction *transaction = [[objc_getClass("SKPaymentTransaction") alloc] init];
     [transaction setValue:payment forKey:@"payment"];
     [transaction setValue:@(SKPaymentTransactionStatePurchased) forKey:@"transactionState"];
     [transaction setValue:[NSUUID UUID] forKey:@"transactionIdentifier"];
     [transaction setValue:[NSDate date] forKey:@"transactionDate"];
     
-    // Báo cho app biết là đã mua thành công
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         for (id observer in [[SKPaymentQueue defaultQueue] valueForKey:@"_observers"]) {
             if ([observer respondsToSelector:@selector(paymentQueue:updatedTransactions:)]) {
@@ -126,7 +124,49 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
+// --- 4. Hook Swift Class bằng Runtime API (Không dùng %hook) ---
+static void patchSwiftClasses(void) {
+    unsigned int count;
+    Class *classes = objc_copyClassList(&count);
+    
+    for (unsigned int i = 0; i < count; i++) {
+        Class cls = classes[i];
+        NSString *className = NSStringFromClass(cls);
+        
+        // Nhắm vào các class Swift của TempMail có chứa chữ Purchase hoặc Premium
+        if ([className containsString:@"TempMail"] && 
+           ([className containsString:@"Purchase"] || [className containsString:@"Premium"])) {
+            
+            qaLog(@"🎯 Quét class Swift: %@", className);
+            unsigned int methodCount;
+            Method *methods = class_copyMethodList(cls, &methodCount);
+            
+            for (unsigned int j = 0; j < methodCount; j++) {
+                Method method = methods[j];
+                SEL selector = method_getName(method);
+                NSString *methodName = NSStringFromSelector(selector);
+                
+                if ([methodName containsString:@"purchase"] || [methodName containsString:@"restore"]) {
+                    qaLog(@"   ✂️ Hook hàm Swift: %@", methodName);
+                    
+                    // Thay thế hàm bằng một block rỗng để chặn giao dịch thật
+                    IMP newImp = imp_implementationWithBlock(^(id _self, ...) {
+                        qaLog(@"   🛑 Đã chặn hàm Swift: %@", methodName);
+                    });
+                    method_setImplementation(method, newImp);
+                }
+            }
+            free(methods);
+        }
+    }
+    free(classes);
+}
+
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Fake StoreKit & Network)");
+    qaLog(@"🚀 QATestingUtils Loaded (Swift Runtime Hook)");
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        patchSwiftClasses();
+    });
 }
