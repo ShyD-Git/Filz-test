@@ -35,18 +35,41 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Hook NSUserDefaults (Sửa cờ Trial) ---
+// --- 1. Múc JSON trả về từ API (Ép cờ Premium) ---
+%hook NSJSONSerialization
++ (id)JSONObjectWithData:(NSData *)data options:(NSJSONReadingOptions)opt error:(NSError **)error {
+    id obj = %orig;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *dict = [obj mutableCopy];
+        BOOL changed = NO;
+        
+        // Quét các key phổ biến của app Premium
+        NSArray *keys = @[@"premium", @"is_premium", @"isPremium", @"active", @"isActive", @"subscription", @"isSubscribed", @"trial", @"isTrial"];
+        
+        for (NSString *key in keys) {
+            if (dict[key] != nil) {
+                dict[key] = @YES;
+                changed = YES;
+            }
+        }
+        
+        if (changed) {
+            qaLog(@"📦 Đã can thiệp JSON API: %@", dict);
+            return dict;
+        }
+    }
+    return obj;
+}
+%end
+
+// --- 2. Hook NSUserDefaults (Cờ Trial & Premium local) ---
 %hook NSUserDefaults
 - (BOOL)boolForKey:(NSString *)defaultName {
     NSString *lower = defaultName.lowercaseString;
-    
-    // Ép các cờ Trial / Expired thành NO để nó tưởng chưa dùng
     if ([lower containsString:@"trialused"] || [lower containsString:@"expired"] || [lower containsString:@"wasused"]) {
-        qaLog(@"✅ Ép FALSE Defaults (Trial): %@", defaultName);
+        qaLog(@"✅ Ép FALSE Defaults: %@", defaultName);
         return NO;
     }
-    
-    // Ép các cờ Premium thành YES
     if ([lower containsString:@"premium"] || [lower containsString:@"pro"] || 
         [lower containsString:@"sub"] || [lower containsString:@"vip"] || 
         [lower containsString:@"paid"] || [lower containsString:@"unlocked"] ||
@@ -58,11 +81,10 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
-// --- 2. Chặn màn hình thanh toán ---
+// --- 3. Chặn bảng thanh toán ---
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
     NSString *clsName = NSStringFromClass([viewControllerToPresent class]).lowercaseString;
-    
     if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
         qaLog(@"🛑 Chặn Paywall: %@", clsName);
         if (completion) completion();
@@ -72,57 +94,33 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
-// --- 3. Chọc thẳng vào các class lõi của App ---
-static void patchAppClasses(void) {
-    NSArray *classesToPatch = @[
+// --- 4. Dump Thuộc tính của Class Lõi (Xem nó giấu cờ ở đâu) ---
+static void dumpProperties() {
+    NSArray *classesToDump = @[
         @"TempMailPremiumAPI.UserSessionResultClass",
         @"TempMailPremiumAPI.UserSessionResponseParser",
-        @"TempMailPremiumAPI.APIPremiumServiceUtils",
-        @"TempMailPremiumAPI.TempMailPremiumAPIService",
-        @"TempMail.ApplicationCoordinator",
-        @"TempMailPremiumAPI.APIUserSessionRequest",
-        @"TempMailPremiumAPI.APIUserActivationRequestV2",
-        @"TempMailPremiumAPI.APIUserActivationRequest",
-        @"TempMailPremiumAPI.APIPremiumRequest",
-        @"TempMail.DataCoordinator"
+        @"TempMail.ApplicationCoordinator"
     ];
     
-    for (NSString *clsName in classesToPatch) {
+    for (NSString *clsName in classesToDump) {
         Class cls = objc_getClass([clsName UTF8String]);
-        if (!cls) {
-            qaLog(@"❌ Không tìm thấy class: %@", clsName);
-            continue;
-        }
+        if (!cls) continue;
         
-        qaLog(@"🎯 Đang mổ class: %@", clsName);
-        unsigned int methodCount = 0;
-        Method *methods = class_copyMethodList(cls, &methodCount);
-        if (!methods) continue;
-        
-        for (unsigned int j = 0; j < methodCount; j++) {
-            Method method = methods[j];
-            SEL selector = method_getName(method);
-            NSString *methodName = NSStringFromSelector(selector);
-            const char *types = method_getTypeEncoding(method);
-            
-            // Hook tất cả hàm trả về BOOL hoặc Int
-            if (types && (types[0] == 'c' || types[0] == 'B' || types[0] == 'i')) {
-                IMP newImp = imp_implementationWithBlock(^BOOL(id _self, ...) {
-                    return YES;
-                });
-                method_setImplementation(method, newImp);
-                qaLog(@"   ✂️ Ép TRUE: %@", methodName);
-            }
+        qaLog(@"🔍 Dump Properties của %@:", clsName);
+        unsigned int count;
+        objc_property_t *props = class_copyPropertyList(cls, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            qaLog(@"   🔑 Property: %s", property_getName(props[i]));
         }
-        free(methods);
+        free(props);
     }
 }
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Hardcore Pro)");
+    qaLog(@"🚀 QATestingUtils Loaded (JSON Interceptor)");
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        patchAppClasses();
+        dumpProperties();
     });
 }
