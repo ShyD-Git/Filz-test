@@ -38,47 +38,66 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
+// --- 1. Ép Cờ Local Cho UI ---
 %hook NSUserDefaults
-- (id)objectForKey:(NSString *)defaultName {
-    // CHỈ ép đúng 2 key này, không log gì cả để tránh nghẽn app
-    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
-        return @YES;
-    }
-    if ([defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumTrialUsed"]) {
-        return @NO;
-    }
-    return %orig;
-}
-
 - (BOOL)boolForKey:(NSString *)defaultName {
-    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
-        return YES;
-    }
-    if ([defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumTrialUsed"]) {
-        return NO;
-    }
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) return NO;
+    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"pro"] || [lower containsString:@"enabled"]) return YES;
     return %orig;
-}
-
-- (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
-    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
-        %orig(YES, defaultName);
-        return;
-    }
-    if ([defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumTrialUsed"]) {
-        %orig(NO, defaultName);
-        return;
-    }
-    %orig;
 }
 %end
 
-// Chặn đứng màn hình Paywall nếu nó tự hiện
+// --- 2. Đớp JSON Server, Nặn Thành Data Pro ---
+%hook NSURLSession
+- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
+    
+    void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (data) {
+            NSString *urlStr = request.URL.absoluteString;
+            NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            
+            // Bỏ qua API của Google, AppsFlyer, Firebase
+            if (![urlStr containsString:@"google"] && ![urlStr containsString:@"appsflyer"] && ![urlStr containsString:@"firebase"]) {
+                
+                if (jsonStr) {
+                    @try {
+                        NSMutableString *mutStr = [jsonStr mutableCopy];
+                        // Đổi cờ false thành true
+                        [mutStr replaceOccurrencesOfString:@"\"premium\":false" withString:@"\"premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                        [mutStr replaceOccurrencesOfString:@"\"isPremium\":false" withString:@"\"isPremium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                        [mutStr replaceOccurrencesOfString:@"\"active\":false" withString:@"\"active\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                        [mutStr replaceOccurrencesOfString:@"\"isActive\":false" withString:@"\"isActive\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                        [mutStr replaceOccurrencesOfString:@"\"subscribed\":false" withString:@"\"subscribed\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                        [mutStr replaceOccurrencesOfString:@"\"is_subscribed\":false" withString:@"\"is_subscribed\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                        
+                        if (![mutStr isEqualToString:jsonStr]) {
+                            qaLog(@"✂️ Đã đổi cờ Free -> Pro cho URL: %@", urlStr);
+                            data = [mutStr dataUsingEncoding:NSUTF8StringEncoding];
+                        } else {
+                            // Log những URL mạng thật để xem nó trả về cái gì
+                            if (jsonStr.length < 500) {
+                                qaLog(@"📡 NET: %@\nRES: %@", urlStr, jsonStr);
+                            }
+                        }
+                    } @catch (NSException *e) {}
+                }
+            }
+        }
+        if (completionHandler) completionHandler(data, response, error);
+    };
+    
+    return %orig(request, wrappedCompletion);
+}
+%end
+
+// --- 3. Chặn Paywall Tự Bật Lên ---
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     NSString *clsName = NSStringFromClass([self class]).lowercaseString;
     if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
+        qaLog(@"🛑 Đá văng Paywall: %@", clsName);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self dismissViewControllerAnimated:YES completion:nil];
         });
@@ -88,5 +107,5 @@ static void qaLog(NSString *format, ...) {
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (No Log Getter, App Alive)");
+    qaLog(@"🚀 QATestingUtils Loaded (JSON Hijack Mode)");
 }
