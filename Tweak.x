@@ -38,47 +38,75 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
+// --- 1. Chỉ Ép Cờ Boolean (Đéo đụng Object/String) ---
 %hook NSUserDefaults
-- (id)objectForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    
-    // 1. Trả về cờ Boolean cho Premium
-    if ([lower containsString:@"paid_v2_user_enabled"] || 
-        [lower containsString:@"endpointpremiumdev"] ||
-        [lower isEqualToString:@"paid"]) {
-        qaLog(@"💉 Ép @YES cho objectForKey: %@", defaultName);
-        return @YES;
-    }
-    
-    // 2. Trả về UUID cho Session ID (đã được ép đúng kiểu String, không gây loop)
-    if ([lower containsString:@"keypremiumsessionid"] || 
-        [lower containsString:@"keypremiumpurchasereceipt"]) {
-        qaLog(@"💉 Ép UUID cho objectForKey: %@", defaultName);
-        return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
-    }
-    
-    // 3. Trả về Timestamp
-    if ([lower containsString:@"paid_timestamp"]) {
-        return @"2099-12-31 23:59:59 +0000";
-    }
-    
-    // 4. Chặn cờ trial
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        return @NO;
-    }
-    
-    return %orig;
-}
-
 - (BOOL)boolForKey:(NSString *)defaultName {
     NSString *lower = defaultName.lowercaseString;
     if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) return NO;
-    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"pro"]) return YES;
+    
+    if ([lower containsString:@"paid"] || 
+        [lower containsString:@"premium"] || 
+        [lower containsString:@"enabled"] || 
+        [lower containsString:@"pro"] ||
+        [lower containsString:@"endpointpremiumdev"]) {
+        qaLog(@"✅ Ép TRUE: %@", defaultName);
+        return YES;
+    }
     return %orig;
+}
+
+- (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
+        %orig(NO, defaultName);
+        return;
+    }
+    if ([lower containsString:@"paid"] || 
+        [lower containsString:@"premium"] || 
+        [lower containsString:@"enabled"] || 
+        [lower containsString:@"pro"] ||
+        [lower containsString:@"endpointpremiumdev"]) {
+        %orig(YES, defaultName);
+        return;
+    }
+    %orig;
 }
 %end
 
-// Chặn Paywall nếu nó vẫn cố hiện
+// --- 2. Sửa Mạng Bằng Chuỗi String (Không dùng Object) ---
+%hook NSURLSession
+- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
+    
+    void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (data) {
+            NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            if (jsonStr) {
+                @try {
+                    NSMutableString *mutStr = [jsonStr mutableCopy];
+                    // Quét các cờ false trong JSON của server thành true
+                    [mutStr replaceOccurrencesOfString:@"\"premium\":false" withString:@"\"premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"isPremium\":false" withString:@"\"isPremium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"is_premium\":false" withString:@"\"is_premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"active\":false" withString:@"\"active\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"isActive\":false" withString:@"\"isActive\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"subscribed\":false" withString:@"\"subscribed\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    
+                    if (![mutStr isEqualToString:jsonStr]) {
+                        qaLog(@"✂️ Đã sửa JSON server trả về");
+                        data = [mutStr dataUsingEncoding:NSUTF8StringEncoding];
+                    }
+                } @catch (NSException *e) {}
+            }
+        }
+        if (completionHandler) {
+            completionHandler(data, response, error);
+        }
+    };
+    return %orig(request, wrappedCompletion);
+}
+%end
+
+// --- 3. Đá Văng Paywall ---
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
@@ -94,5 +122,5 @@ static void qaLog(NSString *format, ...) {
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (SwiftUI Object Override)");
+    qaLog(@"🚀 QATestingUtils Loaded (Safe Loop Fix)");
 }
