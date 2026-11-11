@@ -35,41 +35,38 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Chặn đứng Paywall ngay từ lúc gọi hàm Present ---
-%hook UIViewController
-- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
-    NSString *clsName = NSStringFromClass([viewControllerToPresent class]).lowercaseString;
-    
-    // Bắt tên class có chữ paywall, premium, purchase, store
-    if ([clsName containsString:@"paywall"] || 
-        [clsName containsString:@"premium"] || 
-        [clsName containsString:@"purchase"] ||
-        [clsName containsString:@"store"]) {
-        
-        qaLog(@"🛑 Chặn đứng Paywall: %@", clsName);
-        if (completion) completion();
-        return; // Đéo gọi %orig, màn hình đéo hiện
+// --- 1. Giết Popup chặn tính năng ---
+%hook UIAlertController
++ (instancetype)alertControllerWithTitle:(NSString *)title message:(NSString *)message preferredStyle:(UIAlertControllerStyle)preferredStyle {
+    if ([title containsString:@"Cao cấp"] || [title containsString:@"Premium"] || 
+        [message containsString:@"Cao cấp"] || [message containsString:@"nâng cấp"]) {
+        qaLog(@"🛑 Đã bóp mồm Popup: %@", title);
+        return nil; // Đéo cho phép hiện popup
     }
-    %orig;
+    return %orig;
 }
 %end
 
-// --- 2. Hook StoreKit 2 / NSUserDefaults (Ép cờ Pro) ---
+// --- 2. Ép cờ Pro trong NSUserDefaults ---
 %hook NSUserDefaults
 - (BOOL)boolForKey:(NSString *)defaultName {
     NSString *lower = defaultName.lowercaseString;
     if ([lower containsString:@"premium"] || [lower containsString:@"pro"] || 
-        [lower containsString:@"sub"] || [lower containsString:@"active"] || 
-        [lower containsString:@"trial"]) {
-        qaLog(@"✅ Ép NSUserDefaults [%@] = YES", defaultName);
+        [lower containsString:@"sub"] || [lower containsString:@"trial"] || 
+        [lower containsString:@"ad"]) {
+        
+        // Trial đã dùng thì ép thành NO để nó đéo bắt mua nữa, còn lại ép YES
+        if ([lower containsString:@"trialused"]) {
+            return NO; 
+        }
         return YES;
     }
     return %orig;
 }
 %end
 
-// --- 3. Quét hàm Bool (Chỉ quét app, bỏ qua hệ thống) ---
-static void scanSwiftMethods(void) {
+// --- 3. Quét và tiêu diệt class của App (Tempmail) ---
+static void patchAppClasses(void) {
     unsigned int classCount = 0;
     Class *classes = objc_copyClassList(&classCount);
     if (!classes) return;
@@ -79,11 +76,8 @@ static void scanSwiftMethods(void) {
         Class cls = classes[i];
         NSString *className = NSStringFromClass(cls);
         
-        // Class của app Swift thường bắt đầu bằng _TtC hoặc chứa chữ Manager, Store, User
-        if ([className hasPrefix:@"_TtC"] || 
-            [className.lowercaseString containsString:@"store"] || 
-            [className.lowercaseString containsString:@"user"] ||
-            [className.lowercaseString containsString:@"purchase"]) {
+        // Chỉ nhắm vào class của Tempmail (Swift thường có tên _TtC8tempmail...)
+        if ([className containsString:@"tempmail"] || [className containsString:@"ApplicationCoordinator"]) {
             
             unsigned int methodCount = 0;
             Method *methods = class_copyMethodList(cls, &methodCount);
@@ -95,19 +89,22 @@ static void scanSwiftMethods(void) {
                 NSString *methodName = NSStringFromSelector(selector);
                 NSString *lowerMethod = methodName.lowercaseString;
                 
+                // Đớp mọi hàm check quyền lợi
                 if ([lowerMethod containsString:@"premium"] || 
                     [lowerMethod containsString:@"pro"] || 
-                    [lowerMethod containsString:@"active"] ||
                     [lowerMethod containsString:@"sub"] ||
-                    [lowerMethod containsString:@"trial"]) {
+                    [lowerMethod containsString:@"purchase"] ||
+                    [lowerMethod containsString:@"active"] ||
+                    [lowerMethod containsString:@"ad"]) {
                     
                     const char *types = method_getTypeEncoding(method);
-                    if (types && (types[0] == 'c' || types[0] == 'B' || types[0] == 'i')) { // BOOL hoặc Int
+                    // Nếu trả về BOOL hoặc Int
+                    if (types && (types[0] == 'c' || types[0] == 'B' || types[0] == 'i')) {
                         IMP newImp = imp_implementationWithBlock(^BOOL(id _self, ...) {
-                            return YES;
+                            return YES; // Ép mọi thứ thành TRUE
                         });
                         method_setImplementation(method, newImp);
-                        qaLog(@"✂️ Ép TRUE hàm: -[%@ %@]", className, methodName);
+                        qaLog(@"✂️ Cắt tiết hàm: -[%@ %@]", className, methodName);
                         hookedCount++;
                     }
                 }
@@ -116,19 +113,14 @@ static void scanSwiftMethods(void) {
         }
     }
     free(classes);
-    qaLog(@"--- Quét xong. Đã ép %d hàm. ---", hookedCount);
+    qaLog(@"--- Xong. Đã cắt %d hàm của app ---", hookedCount);
 }
 
 %ctor {
-    // Xóa log cũ
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    
-    qaLog(@"=======================");
-    qaLog(@"🚀 QATestingUtils Loaded!");
-    qaLog(@"=======================");
+    qaLog(@"🚀 QATestingUtils Loaded (Premium Injector)");
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        qaLog(@"Bắt đầu quét class...");
-        scanSwiftMethods();
+        patchAppClasses();
     });
 }
