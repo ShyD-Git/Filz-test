@@ -1,7 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <StoreKit/StoreKit.h>
 
 static NSString *qaLogPath() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
@@ -36,64 +35,81 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Giả Lập App Store Receipt ---
-%hook NSBundle
-- (NSURL *)appStoreReceiptURL {
-    NSURL *originalURL = %orig;
-    if (originalURL) return originalURL;
-    
-    // Tạo file receipt giả nếu chưa có
-    NSString *docsDir = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *fakeReceiptPath = [docsDir stringByAppendingPathComponent:@"fake_receipt"];
-    
-    if (![[NSFileManager defaultManager] fileExistsAtPath:fakeReceiptPath]) {
-        // Một chuỗi JSON giả lập App Store Receipt
-        NSString *fakeReceiptJSON = @"{\"status\":0,\"environment\":\"Production\",\"receipt\":{\"bundle_id\":\"com.tempmail.ios\",\"in_app\":[{\"product_id\":\"com.tempmail.ios.premium.year\",\"purchase_date_ms\":\"1700000000000\"}]}}";
-        [fakeReceiptJSON writeToFile:fakeReceiptPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        qaLog(@"🛠 Đã tạo fake receipt tại: %@", fakeReceiptPath);
-    }
-    
-    return [NSURL fileURLWithPath:fakeReceiptPath];
-}
-%end
-
-// --- 2. Chặn triệt để Swift Paywall Controller ---
-static void hidePaywallView(UIViewController *self) {
-    NSString *clsName = NSStringFromClass([self class]).lowercaseString;
-    if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
-        qaLog(@"🛑 Phát hiện Paywall, đang tắt...");
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self dismissViewControllerAnimated:YES completion:^{
-                // Sau khi tắt, gọi hàm mua hoặc ép cờ Premium
-                qaLog(@"✅ Đã tắt Paywall.");
-            }];
-        });
-    }
-}
-
-%hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    hidePaywallView(self);
-}
-%end
-
-// --- 3. Sửa logic UserDefaults (Chỉ ép Bool, không can thiệp String) ---
+// --- 1. Bơm Session ID Giả & Ép Cờ Premium ---
 %hook NSUserDefaults
 - (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        return NO;
-    }
-    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"enabled"] || [lower containsString:@"pro"]) {
+    if ([defaultName containsString:@"trialused"] || [defaultName containsString:@"expired"]) return NO;
+    if ([defaultName isEqualToString:@"paid_v2_user_enabled"] || [defaultName containsString:@"premium"] || [defaultName containsString:@"pro"]) {
         return YES;
+    }
+    return %orig;
+}
+
+- (id)objectForKey:(NSString *)defaultName {
+    if ([defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumSessionId"] || 
+        [defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumSessionIdCached"]) {
+        qaLog(@"💉 Bơm Session ID: %@", defaultName);
+        return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
+    }
+    return %orig;
+}
+
+- (NSString *)stringForKey:(NSString *)defaultName {
+    if ([defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumSessionId"] || 
+        [defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumSessionIdCached"]) {
+        qaLog(@"💉 Bơm String Session ID: %@", defaultName);
+        return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
     }
     return %orig;
 }
 %end
 
+// --- 2. Bắt Mạng & Nặn Data Pro ---
+%hook NSURLSession
+- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSString *urlStr = request.URL.absoluteString;
+        
+        // Chặn API Premium và trả data giả
+        if ([urlStr containsString:@"premium"] || [urlStr containsString:@"session"] || [urlStr containsString:@"domain"]) {
+            qaLog(@"🛑 Chặn API: %@", urlStr);
+            
+            // Trả về JSON giả báo thành công
+            NSString *fakeJSON = @"{\"status\":\"success\",\"is_premium\":true,\"isActive\":true,\"session_id\":\"602BFAEF-EBF5-478D-878B-FC0149D1BC2E\",\"domains\":[\"@orsonki.com\"],\"mailbox\":\"jixowo7289@orsonki.com\"}";
+            data = [fakeJSON dataUsingEncoding:NSUTF8StringEncoding];
+            response = [[NSHTTPURLResponse alloc] initWithURL:request.URL statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type":@"application/json"}];
+        } else if (data) {
+            NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            if (jsonStr.length > 0 && jsonStr.length < 2000) {
+                qaLog(@"📡 URL: %@\nBODY: %@", urlStr, jsonStr);
+                // Đổi cờ false thành true
+                NSMutableString *mutStr = [jsonStr mutableCopy];
+                [mutStr replaceOccurrencesOfString:@"\"premium\":false" withString:@"\"premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                [mutStr replaceOccurrencesOfString:@"\"isActive\":false" withString:@"\"isActive\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                if (![mutStr isEqualToString:jsonStr]) data = [mutStr dataUsingEncoding:NSUTF8StringEncoding];
+            }
+        }
+        if (completionHandler) completionHandler(data, response, error);
+    };
+    return %orig(request, wrapped);
+}
+%end
+
+// --- 3. Chặn Paywall ---
+%hook UIViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    NSString *clsName = NSStringFromClass([self class]).lowercaseString;
+    if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
+        qaLog(@"🛑 Chặn Paywall: %@", clsName);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self dismissViewControllerAnimated:YES completion:nil];
+        });
+    }
+}
+%end
+
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Fake Receipt & Auto Dismiss)");
+    qaLog(@"🚀 QATestingUtils Loaded (Inject Session & Mock API)");
 }
