@@ -15,17 +15,18 @@ jobs:
 
     - name: Setup Environment
       run: |
-        python3 -m pip install --upgrade pip --break-system-packages
-        python3 -m pip install lief gdown --break-system-packages
+        # Tạo môi trường ảo để cài đặt
+        python3 -m venv venv
+        source venv/bin/activate
+        pip install lief gdown
         brew install ldid zip
 
     - name: Fetch Source Package
       run: |
-        # Tải từ Drive, thêm --fuzzy để tự tìm file nếu link có biến thể
+        source venv/bin/activate
         echo "Đang tải file từ Google Drive..."
         gdown --id 1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4- -O app.ipa || gdown --fuzzy "https://drive.google.com/file/d/1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4-/view?usp=drivesdk" -O app.ipa
         
-        # Kiểm tra xem tải được chưa
         if [ ! -f app.ipa ]; then
           echo "Lỗi: Không tải được file từ Drive!"
           exit 1
@@ -41,7 +42,8 @@ jobs:
         mkdir -p Payload/TempMail.app
         mv TempMail_bin Payload/TempMail.app/TempMail
         
-        python3 patch_binary.py
+        source venv/bin/activate
+        python patch_binary.py
 
     - name: Repack & Sign
       run: |
