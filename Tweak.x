@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <StoreKit/StoreKit.h>
 
 static NSString *qaLogPath() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
@@ -35,68 +36,81 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Dump Toàn Bộ UserDefaults ---
+// --- 1. Đấm Chết Cờ Premium Trong UserDefaults ---
 %hook NSUserDefaults
-- (id)objectForKey:(NSString *)defaultName {
-    id obj = %orig;
-    // Log cả key và value, bỏ qua mấy key rác của WebKit
-    if (![defaultName hasPrefix:@"WebKit"] && ![defaultName hasPrefix:@"NS"]) {
-        qaLog(@"🔍 Defaults [%@] = %@", defaultName, obj);
+- (BOOL)boolForKey:(NSString *)defaultName {
+    if ([defaultName isEqualToString:@"paid_v2_user_enabled"] || 
+        [defaultName isEqualToString:@"paid_v2"] || 
+        [defaultName isEqualToString:@"paid"]) {
+        qaLog(@"✅ Ép TRUE boolForKey: %@", defaultName);
+        return YES;
     }
-    return obj;
+    if ([defaultName containsString:@"trialused"] || [defaultName containsString:@"expired"]) {
+        return NO;
+    }
+    return %orig;
 }
 
-- (NSDictionary *)dictionaryRepresentation {
-    NSDictionary *dict = %orig;
-    qaLog(@"🗂 DUMP TOÀN BỘ USERDEFAULTS: %@", dict);
-    return dict;
+- (id)objectForKey:(NSString *)defaultName {
+    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
+        qaLog(@"✅ Ép @YES objectForKey: %@", defaultName);
+        return @YES;
+    }
+    if ([defaultName isEqualToString:@"paid"] || [defaultName isEqualToString:@"paid_v2"]) {
+        return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
+    }
+    return %orig;
 }
-%end
 
-// --- 2. Dump Tất Cả Request Mạng ---
-%hook NSURLSession
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
-    void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (data) {
-            NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            if (jsonStr.length > 0 && jsonStr.length < 3000) {
-                qaLog(@"📡 URL: %@\nBODY: %@", request.URL.absoluteString, jsonStr);
-            }
-        }
-        if (completionHandler) completionHandler(data, response, error);
-    };
-    return %orig(request, wrappedCompletion);
-}
-%end
-
-// --- 3. Dump Method List Của Class API ---
-static void dumpClassMethods(const char *className) {
-    Class cls = objc_getClass(className);
-    if (!cls) {
-        qaLog(@"❌ Không tìm thấy class: %s", className);
+- (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
+    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
+        qaLog(@"🛑 Chặn ghi đè, ép YES: %@", defaultName);
+        %orig(YES, defaultName);
         return;
     }
-    
-    qaLog(@"🔍 Methods của %s:", className);
-    unsigned int count;
-    Method *methods = class_copyMethodList(cls, &count);
-    for (unsigned int i = 0; i < count; i++) {
-        Method m = methods[i];
-        SEL sel = method_getName(m);
-        qaLog(@"   -> %s", sel_getName(sel));
+    if ([defaultName containsString:@"trialused"]) {
+        %orig(NO, defaultName);
+        return;
     }
-    free(methods);
+    %orig;
 }
+%end
+
+// --- 2. Chặn Cửa Sổ Paywall (Nếu nó cố tình hiện) ---
+%hook UIViewController
+- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
+    NSString *clsName = NSStringFromClass([viewControllerToPresent class]).lowercaseString;
+    if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
+        qaLog(@"🛑 Chặn Paywall: %@", clsName);
+        if (completion) completion();
+        return;
+    }
+    %orig;
+}
+%end
+
+// --- 3. Fake StoreKit 1 (Đề phòng) ---
+%hook SKPaymentQueue
+- (void)addPayment:(SKPayment *)payment {
+    qaLog(@"🛒 Chặn addPayment. Fake mua thành công!");
+    
+    SKPaymentTransaction *transaction = [[objc_getClass("SKPaymentTransaction") alloc] init];
+    [transaction setValue:payment forKey:@"payment"];
+    [transaction setValue:@(SKPaymentTransactionStatePurchased) forKey:@"transactionState"];
+    [transaction setValue:[NSUUID UUID] forKey:@"transactionIdentifier"];
+    [transaction setValue:[NSDate date] forKey:@"transactionDate"];
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        for (id observer in [[SKPaymentQueue defaultQueue] valueForKey:@"_observers"]) {
+            if ([observer respondsToSelector:@selector(paymentQueue:updatedTransactions:)]) {
+                [observer paymentQueue:[SKPaymentQueue defaultQueue] updatedTransactions:@[transaction]];
+            }
+        }
+    });
+}
+%end
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Deep Inspector)");
-    
-    // Đợi app load xong class rồi mới dump
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        dumpClassMethods("TempMailPremiumAPI.UserSessionResultClass");
-        dumpClassMethods("TempMailPremiumAPI.UserSessionResponseParser");
-        dumpClassMethods("TempMailPremiumAPI.TempMailPremiumAPIService");
-        dumpClassMethods("TempMail.PurchaseCoordinator");
-    });
+    qaLog(@"🚀 QATestingUtils Loaded (Ultimate UserDefaults Kill)");
 }
