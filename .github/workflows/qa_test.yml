@@ -35,19 +35,26 @@ jobs:
     - name: Extract & Patch Binary
       run: |
         unzip app.ipa -d extracted_payload
-        BINARY_PATH=$(find extracted_payload/Payload -name "TempMail" -type f | head -n 1)
-        mv "$BINARY_PATH" ./TempMail_bin
         
-        mkdir -p Payload/TempMail.app
-        mv TempMail_bin Payload/TempMail.app/TempMail
+        # Tạo thư mục Payload mới
+        mkdir -p Payload
         
+        # BƯNG NGUYÊN CẢ CÁI APP SANG, ĐỪNG CHỈ BỐC FILE BINARY
+        mv extracted_payload/Payload/TempMail.app Payload/
+        
+        # Chạy script băm file binary nằm bên trong app bundle
         source venv/bin/activate
         python patch_binary.py
 
     - name: Repack & Sign
       run: |
+        # Ký lại file binary
         ldid -S Payload/TempMail.app/TempMail
+        
+        # Dọn dẹp rác
         rm -rf extracted_payload
+        
+        # Nén toàn bộ thư mục Payload (đã có Info.plist và Frameworks) thành file IPA
         zip -r QA_TempMail.ipa Payload/
 
     - name: Upload Artifact
