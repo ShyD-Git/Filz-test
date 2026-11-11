@@ -13,67 +13,68 @@ static void qaLog(NSString *format, ...) {
     NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
     
-    NSString *time = [NSDateFormatter localizedStringFromDate:[NSDate date] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle];
-    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", time, msg];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"HH:mm:ss"];
+    NSString *timeString = [formatter stringFromDate:[NSDate date]];
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timeString, msg];
     
     static dispatch_queue_t logQueue;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        logQueue = dispatch_queue_create("qa.log.queue", DISPATCH_QUEUE_SERIAL);
+        logQueue = dispatch_queue_create("com.qa.log", DISPATCH_QUEUE_SERIAL);
     });
     
     dispatch_async(logQueue, ^{
-        NSString *path = qaLogPath();
-        NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (fileHandle == nil) {
-            [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:qaLogPath()]) {
+            [line writeToFile:qaLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         } else {
-            [fileHandle seekToEndOfFile];
-            [fileHandle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-            [fileHandle closeFile];
+            NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:qaLogPath()];
+            if (fileHandle) {
+                [fileHandle seekToEndOfFile];
+                [fileHandle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+                [fileHandle closeFile];
+            }
         }
     });
 }
 
-// --- 1. Camera Mạng: Chỉ Log, Không Can Thiệp ---
-%hook NSURLSession
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
+%ctor {
+    [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
+    qaLog(@"🚀 QATestingUtils Loaded (Direct Injection)");
     
-    void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (data) {
-            NSString *urlStr = request.URL.absoluteString;
-            NSString *bodyStr = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
-            NSString *respStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            
-            // Bỏ qua mấy API rác của Google/Firebase
-            if (![urlStr containsString:@"google"] && ![urlStr containsString:@"appsflyer"]) {
-                qaLog(@"🚀 REQ: %@", urlStr);
-                if (bodyStr) qaLog(@"   BODY: %@", bodyStr);
-                qaLog(@"📥 RES: %@", respStr);
-            }
-        }
-        if (completionHandler) {
-            completionHandler(data, response, error);
-        }
-    };
-    
-    return %orig(request, wrappedCompletion);
+    // Chờ 0.5s để app khởi tạo UserDefaults rồi tiêm thẳng giá trị vào
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        
+        // 1. Bơm Session ID
+        NSString *fakeUUID = @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
+        [defaults setObject:fakeUUID forKey:@"ApplicationCoordinator.keyPremiumSessionId"];
+        [defaults setObject:fakeUUID forKey:@"ApplicationCoordinator.keyPremiumSessionIdCached"];
+        [defaults setObject:fakeUUID forKey:@"paid"];
+        [defaults setObject:fakeUUID forKey:@"paid_v2"];
+        
+        // 2. Bơm Receipt giả
+        [defaults setObject:@"MIIbBAYJKoZIhvcNAQcCoIIb..." forKey:@"ApplicationCoordinator.keyPremiumPurchaseReceipt"];
+        
+        // 3. Bơm Timestamp
+        NSDateFormatter *df = [[NSDateFormatter alloc] init];
+        [df setDateFormat:@"yyyy-MM-dd HH:mm:ss Z"];
+        [defaults setObject:[df stringFromDate:[NSDate date]] forKey:@"paid_timestamp"];
+        [defaults setObject:[df stringFromDate:[NSDate date]] forKey:@"paid_v2_timestamp"];
+        
+        // 4. Bật cờ Premium
+        [defaults setBool:YES forKey:@"paid_v2_user_enabled"];
+        [defaults setBool:YES forKey:@"UserInterfaceOverrider.endpointPremiumDev"];
+        [defaults setBool:NO forKey:@"ApplicationCoordinator.keyPremiumTrialUsed"];
+        
+        // Đồng bộ xuống đĩa
+        [defaults synchronize];
+        
+        qaLog(@"💉 Đã tiêm toàn bộ dữ liệu Premium vào UserDefaults!");
+    });
 }
-%end
 
-// --- 2. Ép Cờ Bool (Giữ nguyên) ---
-%hook NSUserDefaults
-- (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) return NO;
-    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"enabled"] || [lower containsString:@"pro"]) {
-        return YES;
-    }
-    return %orig;
-}
-%end
-
-// --- 3. Chặn Paywall (Giữ nguyên) ---
+// Chặn Paywall nếu nó vẫn cố tình nhảy ra
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
@@ -86,8 +87,3 @@ static void qaLog(NSString *format, ...) {
     }
 }
 %end
-
-%ctor {
-    [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Network Camera)");
-}
