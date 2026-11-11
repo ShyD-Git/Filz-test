@@ -36,65 +36,43 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Đấm Sập Toàn Bộ Cờ Premium Trong UserDefaults ---
+// --- 1. Chỉ Ép Boolean, Tránh Can Thiệp Vào String/Receipt ---
 %hook NSUserDefaults
-- (id)objectForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower hasPrefix:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"keypremium"]) {
-        if ([lower containsString:@"timestamp"]) {
-            qaLog(@"✅ Ép Object Timestamp: %@", defaultName);
-            return @"2099-12-31 23:59:59 +0000";
-        }
-        if ([lower containsString:@"enabled"]) {
-            qaLog(@"✅ Ép Object BOOL: %@", defaultName);
-            return @YES;
-        }
-        qaLog(@"✅ Ép Object UUID: %@", defaultName);
-        return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
-    }
-    return %orig;
-}
-
-- (NSString *)stringForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower hasPrefix:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"keypremium"]) {
-        if ([lower containsString:@"timestamp"]) {
-            qaLog(@"✅ Ép String Timestamp: %@", defaultName);
-            return @"2099-12-31 23:59:59 +0000";
-        }
-        qaLog(@"✅ Ép String UUID: %@", defaultName);
-        return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
-    }
-    return %orig;
-}
-
 - (BOOL)boolForKey:(NSString *)defaultName {
     NSString *lower = defaultName.lowercaseString;
-    if ([lower hasPrefix:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"keypremium"]) {
+    
+    // Ép các cờ boolean của Premium thành YES
+    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"enabled"]) {
         qaLog(@"✅ Ép Bool: %@", defaultName);
         return YES;
     }
+    
+    // Ép các cờ dùng thử thành NO
     if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
         return NO;
     }
+    
     return %orig;
 }
 
 - (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
     NSString *lower = defaultName.lowercaseString;
-    if ([lower hasPrefix:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"keypremium"]) {
+    
+    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"enabled"]) {
         %orig(YES, defaultName);
         return;
     }
+    
     if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
         %orig(NO, defaultName);
         return;
     }
+    
     %orig;
 }
 %end
 
-// --- 2. Fake StoreKit 1 (Đề phòng app gọi mua) ---
+// --- 2. Fake StoreKit 1 ---
 %hook SKPaymentQueue
 - (void)addPayment:(SKPayment *)payment {
     qaLog(@"🛒 Chặn addPayment. Fake mua thành công!");
@@ -117,5 +95,5 @@ static void qaLog(NSString *format, ...) {
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Final UserDefaults Override)");
+    qaLog(@"🚀 QATestingUtils Loaded (Bool Only Override)");
 }
