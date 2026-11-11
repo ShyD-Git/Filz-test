@@ -1,7 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <StoreKit/StoreKit.h>
 
 static NSString *qaLogPath() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
@@ -36,30 +35,32 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Bắt trọn mạng để xem cấu trúc JSON ---
+// --- 1. Dump Toàn Bộ UserDefaults ---
+%hook NSUserDefaults
+- (id)objectForKey:(NSString *)defaultName {
+    id obj = %orig;
+    // Log cả key và value, bỏ qua mấy key rác của WebKit
+    if (![defaultName hasPrefix:@"WebKit"] && ![defaultName hasPrefix:@"NS"]) {
+        qaLog(@"🔍 Defaults [%@] = %@", defaultName, obj);
+    }
+    return obj;
+}
+
+- (NSDictionary *)dictionaryRepresentation {
+    NSDictionary *dict = %orig;
+    qaLog(@"🗂 DUMP TOÀN BỘ USERDEFAULTS: %@", dict);
+    return dict;
+}
+%end
+
+// --- 2. Dump Tất Cả Request Mạng ---
 %hook NSURLSession
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
     void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
         if (data) {
             NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            if (jsonStr.length > 0 && jsonStr.length < 2000) {
-                // Dump mọi thứ, đéo cần biết URL là gì
+            if (jsonStr.length > 0 && jsonStr.length < 3000) {
                 qaLog(@"📡 URL: %@\nBODY: %@", request.URL.absoluteString, jsonStr);
-                
-                @try {
-                    NSMutableString *mutStr = [jsonStr mutableCopy];
-                    // Quét sạch cờ false liên quan đến premium
-                    [mutStr replaceOccurrencesOfString:@"\"premium\":false" withString:@"\"premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                    [mutStr replaceOccurrencesOfString:@"\"is_premium\":false" withString:@"\"is_premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                    [mutStr replaceOccurrencesOfString:@"\"isPremium\":false" withString:@"\"isPremium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                    [mutStr replaceOccurrencesOfString:@"\"active\":false" withString:@"\"active\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                    [mutStr replaceOccurrencesOfString:@"\"isActive\":false" withString:@"\"isActive\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                    [mutStr replaceOccurrencesOfString:@"\"subscribed\":false" withString:@"\"subscribed\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                    
-                    if (![mutStr isEqualToString:jsonStr]) {
-                        data = [mutStr dataUsingEncoding:NSUTF8StringEncoding];
-                    }
-                } @catch (NSException *e) {}
             }
         }
         if (completionHandler) completionHandler(data, response, error);
@@ -68,50 +69,34 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
-// --- 2. Vá chết hàm Swift (PurchaseCoordinator) ---
-static void patchSwiftMethods(void) {
-    NSArray *targetClasses = @[
-        @"TempMail.PurchaseCoordinator",
-        @"TempMailPremiumAPI.UserSessionResultClass",
-        @"TempMailPremiumAPI.UserSessionResponseParser"
-    ];
-    
-    for (NSString *clsName in targetClasses) {
-        Class cls = objc_getClass([clsName UTF8String]);
-        if (!cls) continue;
-        
-        unsigned int count;
-        Method *methods = class_copyMethodList(cls, &count);
-        for (unsigned int i = 0; i < count; i++) {
-            Method m = methods[i];
-            SEL sel = method_getName(m);
-            NSString *selName = NSStringFromSelector(sel);
-            
-            qaLog(@"🔍 Tìm thấy hàm: %@ trong %@", selName, clsName);
-            
-            // Đớp mọi hàm có chữ purchase, restore, active, premium
-            if ([selName.lowercaseString containsString:@"purchase"] || 
-                [selName.lowercaseString containsString:@"restore"] ||
-                [selName.lowercaseString containsString:@"active"] ||
-                [selName.lowercaseString containsString:@"premium"]) {
-                
-                IMP newImp = imp_implementationWithBlock(^(id _self, ...) {
-                    qaLog(@"🛑 Đã chặn hàm: %@", selName);
-                    // Ép trả về YES nếu là hàm bool
-                    return YES; 
-                });
-                method_setImplementation(m, newImp);
-            }
-        }
-        free(methods);
+// --- 3. Dump Method List Của Class API ---
+static void dumpClassMethods(const char *className) {
+    Class cls = objc_getClass(className);
+    if (!cls) {
+        qaLog(@"❌ Không tìm thấy class: %s", className);
+        return;
     }
+    
+    qaLog(@"🔍 Methods của %s:", className);
+    unsigned int count;
+    Method *methods = class_copyMethodList(cls, &count);
+    for (unsigned int i = 0; i < count; i++) {
+        Method m = methods[i];
+        SEL sel = method_getName(m);
+        qaLog(@"   -> %s", sel_getName(sel));
+    }
+    free(methods);
 }
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Full Dump & Swift Patch)");
+    qaLog(@"🚀 QATestingUtils Loaded (Deep Inspector)");
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        patchSwiftMethods();
+    // Đợi app load xong class rồi mới dump
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dumpClassMethods("TempMailPremiumAPI.UserSessionResultClass");
+        dumpClassMethods("TempMailPremiumAPI.UserSessionResponseParser");
+        dumpClassMethods("TempMailPremiumAPI.TempMailPremiumAPIService");
+        dumpClassMethods("TempMail.PurchaseCoordinator");
     });
 }
