@@ -23,38 +23,27 @@ jobs:
     - name: Fetch Source Package
       run: |
         source venv/bin/activate
-        echo "Đang tải file từ Google Drive..."
         gdown "https://drive.google.com/uc?id=1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4-" -O app.ipa || gdown "https://drive.google.com/file/d/1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4-/view?usp=drivesdk" -O app.ipa
-        
         if [ ! -f app.ipa ]; then
           echo "Lỗi: Không tải được file từ Drive!"
           exit 1
         fi
-        file app.ipa
 
     - name: Extract & Patch Binary
       run: |
         unzip app.ipa -d extracted_payload
-        
-        # Tạo thư mục Payload mới
         mkdir -p Payload
-        
-        # BƯNG NGUYÊN CẢ CÁI APP SANG, ĐỪNG CHỈ BỐC FILE BINARY
         mv extracted_payload/Payload/TempMail.app Payload/
         
-        # Chạy script băm file binary nằm bên trong app bundle
         source venv/bin/activate
         python patch_binary.py
 
     - name: Repack & Sign
       run: |
-        # Ký lại file binary
-        ldid -S Payload/TempMail.app/TempMail
+        # Ký ad-hoc toàn bộ file thực thi bên trong App Bundle
+        find Payload/TempMail.app -type f -perm +111 -exec ldid -S {} \;
         
-        # Dọn dẹp rác
         rm -rf extracted_payload
-        
-        # Nén toàn bộ thư mục Payload (đã có Info.plist và Frameworks) thành file IPA
         zip -r QA_TempMail.ipa Payload/
 
     - name: Upload Artifact
