@@ -36,137 +36,82 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Chặn ghi đè Premium vào UserDefaults ---
-%hook NSUserDefaults
-- (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    
-    if ([lower containsString:@"premium"] || [lower containsString:@"pro"] || 
-        [lower containsString:@"active"] || [lower containsString:@"sub"] || 
-        [lower containsString:@"vip"] || [lower containsString:@"paid"] ||
-        [lower containsString:@"unlocked"]) {
-        qaLog(@"🛑 Chặn setBool: %@ -> Ép YES", defaultName);
-        %orig(YES, defaultName);
-        return;
-    }
-    
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        qaLog(@"🛑 Chặn setBool: %@ -> Ép NO", defaultName);
-        %orig(NO, defaultName);
-        return;
-    }
-    %orig;
-}
-%end
-
-// --- 2. Fake StoreKit 1 (Giao dịch mua thành công) ---
-%hook SKPaymentQueue
-- (void)addPayment:(SKPayment *)payment {
-    qaLog(@"🛒 Chặn addPayment. Giả lập mua thành công!");
-    
-    SKPaymentTransaction *transaction = [[objc_getClass("SKPaymentTransaction") alloc] init];
-    [transaction setValue:payment forKey:@"payment"];
-    [transaction setValue:@(SKPaymentTransactionStatePurchased) forKey:@"transactionState"];
-    [transaction setValue:[NSUUID UUID] forKey:@"transactionIdentifier"];
-    [transaction setValue:[NSDate date] forKey:@"transactionDate"];
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        for (id observer in [[SKPaymentQueue defaultQueue] valueForKey:@"_observers"]) {
-            if ([observer respondsToSelector:@selector(paymentQueue:updatedTransactions:)]) {
-                [observer paymentQueue:[SKPaymentQueue defaultQueue] updatedTransactions:@[transaction]];
-            }
-        }
-    });
-}
-%end
-
-// --- 3. Bắt Mạng (Sửa JSON trả về) ---
+// --- 1. Bắt trọn mạng để xem cấu trúc JSON ---
 %hook NSURLSession
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
-    
     void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (data && request.URL) {
-            NSString *urlStr = request.URL.absoluteString;
+        if (data) {
             NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            
-            if ([urlStr containsString:@"session"] || [urlStr containsString:@"user"] || 
-                [urlStr containsString:@"premium"] || [urlStr containsString:@"activate"] || 
-                [urlStr containsString:@"receipt"] || [urlStr containsString:@"verify"] ||
-                [urlStr containsString:@"mailbox"]) {
-                
-                qaLog(@"📡 API RAW: %@\nBODY: %@", urlStr, jsonStr);
+            if (jsonStr.length > 0 && jsonStr.length < 2000) {
+                // Dump mọi thứ, đéo cần biết URL là gì
+                qaLog(@"📡 URL: %@\nBODY: %@", request.URL.absoluteString, jsonStr);
                 
                 @try {
-                    if (jsonStr) {
-                        NSMutableString *mutStr = [jsonStr mutableCopy];
-                        [mutStr replaceOccurrencesOfString:@"\"premium\":false" withString:@"\"premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"is_premium\":false" withString:@"\"is_premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"isPremium\":false" withString:@"\"isPremium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"active\":false" withString:@"\"active\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"isActive\":false" withString:@"\"isActive\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"subscribed\":false" withString:@"\"subscribed\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"is_pro\":false" withString:@"\"is_pro\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        
-                        if (![mutStr isEqualToString:jsonStr]) {
-                            qaLog(@"✂️ Đã đổi cờ Premium thành TRUE trong response");
-                            data = [mutStr dataUsingEncoding:NSUTF8StringEncoding];
-                        }
+                    NSMutableString *mutStr = [jsonStr mutableCopy];
+                    // Quét sạch cờ false liên quan đến premium
+                    [mutStr replaceOccurrencesOfString:@"\"premium\":false" withString:@"\"premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"is_premium\":false" withString:@"\"is_premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"isPremium\":false" withString:@"\"isPremium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"active\":false" withString:@"\"active\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"isActive\":false" withString:@"\"isActive\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    [mutStr replaceOccurrencesOfString:@"\"subscribed\":false" withString:@"\"subscribed\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
+                    
+                    if (![mutStr isEqualToString:jsonStr]) {
+                        data = [mutStr dataUsingEncoding:NSUTF8StringEncoding];
                     }
                 } @catch (NSException *e) {}
             }
         }
-        if (completionHandler) {
-            completionHandler(data, response, error);
-        }
+        if (completionHandler) completionHandler(data, response, error);
     };
-    
     return %orig(request, wrappedCompletion);
 }
 %end
 
-// --- 4. Hook Swift Class bằng Runtime API (Không dùng %hook) ---
-static void patchSwiftClasses(void) {
-    unsigned int count;
-    Class *classes = objc_copyClassList(&count);
+// --- 2. Vá chết hàm Swift (PurchaseCoordinator) ---
+static void patchSwiftMethods(void) {
+    NSArray *targetClasses = @[
+        @"TempMail.PurchaseCoordinator",
+        @"TempMailPremiumAPI.UserSessionResultClass",
+        @"TempMailPremiumAPI.UserSessionResponseParser"
+    ];
     
-    for (unsigned int i = 0; i < count; i++) {
-        Class cls = classes[i];
-        NSString *className = NSStringFromClass(cls);
+    for (NSString *clsName in targetClasses) {
+        Class cls = objc_getClass([clsName UTF8String]);
+        if (!cls) continue;
         
-        // Nhắm vào các class Swift của TempMail có chứa chữ Purchase hoặc Premium
-        if ([className containsString:@"TempMail"] && 
-           ([className containsString:@"Purchase"] || [className containsString:@"Premium"])) {
+        unsigned int count;
+        Method *methods = class_copyMethodList(cls, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            Method m = methods[i];
+            SEL sel = method_getName(m);
+            NSString *selName = NSStringFromSelector(sel);
             
-            qaLog(@"🎯 Quét class Swift: %@", className);
-            unsigned int methodCount;
-            Method *methods = class_copyMethodList(cls, &methodCount);
+            qaLog(@"🔍 Tìm thấy hàm: %@ trong %@", selName, clsName);
             
-            for (unsigned int j = 0; j < methodCount; j++) {
-                Method method = methods[j];
-                SEL selector = method_getName(method);
-                NSString *methodName = NSStringFromSelector(selector);
+            // Đớp mọi hàm có chữ purchase, restore, active, premium
+            if ([selName.lowercaseString containsString:@"purchase"] || 
+                [selName.lowercaseString containsString:@"restore"] ||
+                [selName.lowercaseString containsString:@"active"] ||
+                [selName.lowercaseString containsString:@"premium"]) {
                 
-                if ([methodName containsString:@"purchase"] || [methodName containsString:@"restore"]) {
-                    qaLog(@"   ✂️ Hook hàm Swift: %@", methodName);
-                    
-                    // Thay thế hàm bằng một block rỗng để chặn giao dịch thật
-                    IMP newImp = imp_implementationWithBlock(^(id _self, ...) {
-                        qaLog(@"   🛑 Đã chặn hàm Swift: %@", methodName);
-                    });
-                    method_setImplementation(method, newImp);
-                }
+                IMP newImp = imp_implementationWithBlock(^(id _self, ...) {
+                    qaLog(@"🛑 Đã chặn hàm: %@", selName);
+                    // Ép trả về YES nếu là hàm bool
+                    return YES; 
+                });
+                method_setImplementation(m, newImp);
             }
-            free(methods);
         }
+        free(methods);
     }
-    free(classes);
 }
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Swift Runtime Hook)");
+    qaLog(@"🚀 QATestingUtils Loaded (Full Dump & Swift Patch)");
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        patchSwiftClasses();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        patchSwiftMethods();
     });
 }
