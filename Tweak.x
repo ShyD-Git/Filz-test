@@ -35,47 +35,45 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Chỉ Ép Cờ Bool (Đéo đụng String/Object) ---
-%hook NSUserDefaults
-- (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
+// --- 1. Camera Mạng: Chỉ Log, Không Can Thiệp ---
+%hook NSURLSession
+- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
     
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        return NO;
-    }
+    void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (data) {
+            NSString *urlStr = request.URL.absoluteString;
+            NSString *bodyStr = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
+            NSString *respStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            
+            // Bỏ qua mấy API rác của Google/Firebase
+            if (![urlStr containsString:@"google"] && ![urlStr containsString:@"appsflyer"]) {
+                qaLog(@"🚀 REQ: %@", urlStr);
+                if (bodyStr) qaLog(@"   BODY: %@", bodyStr);
+                qaLog(@"📥 RES: %@", respStr);
+            }
+        }
+        if (completionHandler) {
+            completionHandler(data, response, error);
+        }
+    };
     
-    if ([lower containsString:@"paid"] || 
-        [lower containsString:@"premium"] || 
-        [lower containsString:@"enabled"] || 
-        [lower containsString:@"pro"]) {
-        qaLog(@"✅ Ép TRUE: %@", defaultName);
-        return YES;
-    }
-    
-    return %orig;
-}
-
-- (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        %orig(NO, defaultName);
-        return;
-    }
-    
-    if ([lower containsString:@"paid"] || 
-        [lower containsString:@"premium"] || 
-        [lower containsString:@"enabled"] || 
-        [lower containsString:@"pro"]) {
-        %orig(YES, defaultName);
-        return;
-    }
-    
-    %orig;
+    return %orig(request, wrappedCompletion);
 }
 %end
 
-// --- 2. Chặn Màn Hình Paywall ---
+// --- 2. Ép Cờ Bool (Giữ nguyên) ---
+%hook NSUserDefaults
+- (BOOL)boolForKey:(NSString *)defaultName {
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) return NO;
+    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"enabled"] || [lower containsString:@"pro"]) {
+        return YES;
+    }
+    return %orig;
+}
+%end
+
+// --- 3. Chặn Paywall (Giữ nguyên) ---
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
@@ -91,5 +89,5 @@ static void qaLog(NSString *format, ...) {
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Safe Mode)");
+    qaLog(@"🚀 QATestingUtils Loaded (Network Camera)");
 }
