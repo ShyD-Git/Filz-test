@@ -3,50 +3,67 @@ import os
 import sys
 
 def patch_binary(binary_path):
-    print(f"[*] Analyzing binary: {binary_path}")
     fat = lief.MachO.parse(binary_path)
-    
     if fat is None:
-        print("[-] Failed to parse MachO binary.")
-        sys.exit(1)
+        return 0
 
     patched_count = 0
     # MOV W0, #0 (Returns false) -> MOV W0, #1 (Returns true)
     MOV_W0_0 = b'\x00\x00\x80\x52'
-    MOV_W0_1 = [0x20, 0x00, 0x80, 0x52]
+    MOV_W0_1 = b'\x20\x00\x80\x52'
 
     for binary in fat:
-        print(f"[*] Processing architecture: {binary.header.cpu_type}")
-        
-        # DUMP TẤT CẢ SYMBOL CÓ CHỮ PREMIUM HOẶC TEMPMAIL
-        print("[*] Dumping symbols...")
         for symbol in binary.symbols:
-            if any(k in symbol.name for k in ["Premium", "Transaction", "isActive", "Subscription", "isPro", "TempMail", "paid"]):
-                print(f"   [FOUND] Symbol: {symbol.name} at {hex(symbol.value)}")
+            # value > 0 nghĩa là hàm thực sự nằm trong file này (không phải import từ ngoài)
+            if symbol.value >= binary.imagebase and symbol.value > 0:
+                name = symbol.name.lower()
                 
-                if symbol.value >= binary.imagebase:
+                # Nếu là hàm check Premium/Active -> Ép trả về TRUE
+                if any(k in name for k in ["ispremium", "isactive", "ispro", "haspurchased", "issubscribed"]):
                     try:
                         bytes_at_addr = bytes(binary.get_content_from_virtual_address(symbol.value, 4))
-                        print(f"      -> Bytes: {bytes_at_addr.hex()}")
-                        
                         if bytes_at_addr == MOV_W0_0:
-                            binary.patch_address(symbol.value, MOV_W0_1)
-                            print(f"    [!] Patched {symbol.name} to return TRUE")
+                            binary.patch_address(symbol.value, list(MOV_W0_1))
+                            print(f"    [!] Patched to TRUE: {symbol.name}")
                             patched_count += 1
-                    except Exception as e:
-                        print(f"      -> Error reading bytes: {e}")
+                    except Exception: pass
+                
+                # Nếu là hàm check hết hạn -> Ép trả về FALSE
+                elif any(k in name for k in ["isexpired", "istrialused"]):
+                    try:
+                        bytes_at_addr = bytes(binary.get_content_from_virtual_address(symbol.value, 4))
+                        if bytes_at_addr == MOV_W0_1:
+                            binary.patch_address(symbol.value, list(MOV_W0_0))
+                            print(f"    [!] Patched to FALSE: {symbol.name}")
+                            patched_count += 1
+                    except Exception: pass
 
     if patched_count > 0:
         builder = lief.MachO.Builder(fat)
         builder.write(binary_path)
-        print(f"[*] Patching complete. Modified {patched_count} targets.")
-    else:
-        print("[!] CẢNH BÁO: Không tìm thấy hàm nào cần vá.")
+    return patched_count
 
 if __name__ == "__main__":
-    target_binary = "Payload/TempMail.app/TempMail"
-    if os.path.exists(target_binary):
-        patch_binary(target_binary)
-    else:
-        print("[-] Target binary not found!")
-        sys.exit(1)
+    app_path = "Payload/TempMail.app"
+    total_patched = 0
+    
+    print(f"[*] Quét toàn bộ App Bundle: {app_path}")
+    
+    # Quét đệ quy mọi file trong thư mục App (bao gồm cả Frameworks)
+    for root, dirs, files in os.walk(app_path):
+        for file in files:
+            file_path = os.path.join(root, file)
+            # Chỉ xử lý các file là Mach-O Binary (thường là file thực thi)
+            try:
+                if lief.is_macho(file_path):
+                    print(f"[*] Đang mổ file: {file_path}")
+                    patched = patch_binary(file_path)
+                    total_patched += patched
+                    if patched > 0:
+                        print(f"    -> Đã vá {patched} hàm.")
+            except Exception as e:
+                pass
+
+    print(f"[*] TỔNG KẾT: Đã vá thành công {total_patched} hàm.")
+    if total_patched == 0:
+        print("[!] CẢNH BÁO: Không tìm thấy hàm nào để vá. App có thể dùng StoreKit 2 JWS.")
