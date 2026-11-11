@@ -36,20 +36,24 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Chỉ Ép Boolean, Tránh Can Thiệp Vào String/Receipt ---
+// --- 1. Sửa Logic Ép Bool (Trial = NO, Premium = YES) ---
 %hook NSUserDefaults
 - (BOOL)boolForKey:(NSString *)defaultName {
     NSString *lower = defaultName.lowercaseString;
     
-    // Ép các cờ boolean của Premium thành YES
-    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"enabled"]) {
-        qaLog(@"✅ Ép Bool: %@", defaultName);
-        return YES;
+    // 1. Phải check trial/expired TRƯỚC ĐỂ NÓ TRẢ VỀ FALSE
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
+        qaLog(@"✅ Ép FALSE (Trial): %@", defaultName);
+        return NO;
     }
     
-    // Ép các cờ dùng thử thành NO
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        return NO;
+    // 2. Ép các cờ Premium
+    if ([lower containsString:@"paid"] || 
+        [lower containsString:@"premium"] || 
+        [lower containsString:@"enabled"] || 
+        [lower containsString:@"pro"]) {
+        qaLog(@"✅ Ép TRUE (Premium): %@", defaultName);
+        return YES;
     }
     
     return %orig;
@@ -58,13 +62,16 @@ static void qaLog(NSString *format, ...) {
 - (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
     NSString *lower = defaultName.lowercaseString;
     
-    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"enabled"]) {
-        %orig(YES, defaultName);
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
+        %orig(NO, defaultName);
         return;
     }
     
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-        %orig(NO, defaultName);
+    if ([lower containsString:@"paid"] || 
+        [lower containsString:@"premium"] || 
+        [lower containsString:@"enabled"] || 
+        [lower containsString:@"pro"]) {
+        %orig(YES, defaultName);
         return;
     }
     
@@ -72,7 +79,7 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
-// --- 2. Fake StoreKit 1 ---
+// --- 2. Fake StoreKit 1 (Dự phòng) ---
 %hook SKPaymentQueue
 - (void)addPayment:(SKPayment *)payment {
     qaLog(@"🛒 Chặn addPayment. Fake mua thành công!");
@@ -95,5 +102,5 @@ static void qaLog(NSString *format, ...) {
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Bool Only Override)");
+    qaLog(@"🚀 QATestingUtils Loaded (Fixed Logic)");
 }
