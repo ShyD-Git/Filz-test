@@ -15,7 +15,6 @@ jobs:
 
     - name: Setup Environment
       run: |
-        # Tạo môi trường ảo để cài đặt
         python3 -m venv venv
         source venv/bin/activate
         pip install lief gdown
@@ -25,7 +24,7 @@ jobs:
       run: |
         source venv/bin/activate
         echo "Đang tải file từ Google Drive..."
-        gdown --id 1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4- -O app.ipa || gdown --fuzzy "https://drive.google.com/file/d/1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4-/view?usp=drivesdk" -O app.ipa
+        gdown "https://drive.google.com/uc?id=1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4-" -O app.ipa || gdown "https://drive.google.com/file/d/1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4-/view?usp=drivesdk" -O app.ipa
         
         if [ ! -f app.ipa ]; then
           echo "Lỗi: Không tải được file từ Drive!"
