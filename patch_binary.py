@@ -1,56 +1,47 @@
-name: QA Build Pipeline
+import lief
+import os
+import sys
 
-on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch:
+def patch_binary(binary_path):
+    print(f"[*] Analyzing binary: {binary_path}")
+    fat = lief.MachO.parse(binary_path)
+    
+    if fat is None:
+        print("[-] Failed to parse MachO binary.")
+        sys.exit(1)
 
-jobs:
-  build:
-    runs-on: macos-latest
+    patched_count = 0
+    # MOV W0, #0 (Returns false) -> MOV W0, #1 (Returns true)
+    MOV_W0_0 = b'\x00\x00\x80\x52'
+    MOV_W0_1 = [0x20, 0x00, 0x80, 0x52]
 
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Setup Environment
-      run: |
-        # BỎ LỆNH UPGRADE PIP ĐI, CÀI THẲNG THƯ VIỆN
-        python3 -m pip install lief gdown --break-system-packages
-        brew install ldid zip
-
-    - name: Fetch Source Package
-      run: |
-        # Tải từ Drive
-        echo "Đang tải file từ Google Drive..."
-        gdown --id 1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4- -O app.ipa || gdown --fuzzy "https://drive.google.com/file/d/1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4-/view?usp=drivesdk" -O app.ipa
+    for binary in fat:
+        print(f"[*] Processing architecture: {binary.header.cpu_type}")
         
-        # Kiểm tra xem tải được chưa
-        if [ ! -f app.ipa ]; then
-          echo "Lỗi: Không tải được file từ Drive!"
-          exit 1
-        fi
-        file app.ipa
+        for symbol in binary.symbols:
+            if any(k in symbol.name for k in ["Premium", "Transaction", "isActive", "Subscription", "isPro"]):
+                if symbol.value >= binary.imagebase:
+                    try:
+                        bytes_at_addr = bytes(binary.get_content_from_virtual_address(symbol.value, 4))
+                        
+                        if bytes_at_addr == MOV_W0_0:
+                            binary.patch_address(symbol.value, MOV_W0_1)
+                            print(f"    [!] Patched {symbol.name} to return TRUE")
+                            patched_count += 1
+                    except Exception as e:
+                        pass
 
-    - name: Extract & Patch Binary
-      run: |
-        unzip app.ipa -d extracted_payload
-        BINARY_PATH=$(find extracted_payload/Payload -name "TempMail" -type f | head -n 1)
-        mv "$BINARY_PATH" ./TempMail_bin
-        
-        mkdir -p Payload/TempMail.app
-        mv TempMail_bin Payload/TempMail.app/TempMail
-        
-        python3 patch_binary.py
+    if patched_count > 0:
+        builder = lief.MachO.Builder(fat)
+        builder.write(binary_path)
+        print(f"[*] Patching complete. Modified {patched_count} targets.")
+    else:
+        print("[!] Cảnh báo: Không tìm thấy hàm nào cần vá. File có thể đã bị xáo trộn mã máy.")
 
-    - name: Repack & Sign
-      run: |
-        ldid -S Payload/TempMail.app/TempMail
-        rm -rf extracted_payload
-        zip -r QA_TempMail.ipa Payload/
-
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: QA-TempMail-IPA
-        path: QA_TempMail.ipa
+if __name__ == "__main__":
+    target_binary = "Payload/TempMail.app/TempMail"
+    if os.path.exists(target_binary):
+        patch_binary(target_binary)
+    else:
+        print("[-] Target binary not found!")
+        sys.exit(1)
