@@ -15,38 +15,38 @@ jobs:
 
     - name: Setup Environment
       run: |
-        # Thêm cờ --break-system-packages để lách luật PEP 668
         python3 -m pip install --upgrade pip --break-system-packages
         python3 -m pip install lief gdown --break-system-packages
         brew install ldid zip
 
     - name: Fetch Source Package
       run: |
-        # Tự động tải file từ Google Drive của mày
-        gdown --id 1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4- -O app.ipa
+        # Tải từ Drive, thêm --fuzzy để tự tìm file nếu link có biến thể
+        echo "Đang tải file từ Google Drive..."
+        gdown --id 1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4- -O app.ipa || gdown --fuzzy "https://drive.google.com/file/d/1uJ7ZLtctizOFezk4zbpKUhGVTNnkYG4-/view?usp=drivesdk" -O app.ipa
+        
+        # Kiểm tra xem tải được chưa
+        if [ ! -f app.ipa ]; then
+          echo "Lỗi: Không tải được file từ Drive!"
+          exit 1
+        fi
         file app.ipa
 
     - name: Extract & Patch Binary
       run: |
         unzip app.ipa -d extracted_payload
-        # Tìm file binary chính
         BINARY_PATH=$(find extracted_payload/Payload -name "TempMail" -type f | head -n 1)
         mv "$BINARY_PATH" ./TempMail_bin
         
-        # Tạo lại cấu trúc thư mục chuẩn
         mkdir -p Payload/TempMail.app
         mv TempMail_bin Payload/TempMail.app/TempMail
         
-        # Chạy script băm binary
         python3 patch_binary.py
 
     - name: Repack & Sign
       run: |
-        # Ký ad-hoc để TrollStore cài được
         ldid -S Payload/TempMail.app/TempMail
         rm -rf extracted_payload
-        
-        # Nén lại thành file IPA
         zip -r QA_TempMail.ipa Payload/
 
     - name: Upload Artifact
