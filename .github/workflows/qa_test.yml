@@ -15,8 +15,9 @@ jobs:
 
     - name: Setup Environment
       run: |
-        python3 -m pip install --upgrade pip
-        python3 -m pip install lief gdown
+        # Thêm cờ --break-system-packages để lách luật PEP 668
+        python3 -m pip install --upgrade pip --break-system-packages
+        python3 -m pip install lief gdown --break-system-packages
         brew install ldid zip
 
     - name: Fetch Source Package
