@@ -38,43 +38,47 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-%ctor {
-    [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Direct Injection)");
+%hook NSUserDefaults
+- (id)objectForKey:(NSString *)defaultName {
+    NSString *lower = defaultName.lowercaseString;
     
-    // Chờ 0.5s để app khởi tạo UserDefaults rồi tiêm thẳng giá trị vào
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        
-        // 1. Bơm Session ID
-        NSString *fakeUUID = @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
-        [defaults setObject:fakeUUID forKey:@"ApplicationCoordinator.keyPremiumSessionId"];
-        [defaults setObject:fakeUUID forKey:@"ApplicationCoordinator.keyPremiumSessionIdCached"];
-        [defaults setObject:fakeUUID forKey:@"paid"];
-        [defaults setObject:fakeUUID forKey:@"paid_v2"];
-        
-        // 2. Bơm Receipt giả
-        [defaults setObject:@"MIIbBAYJKoZIhvcNAQcCoIIb..." forKey:@"ApplicationCoordinator.keyPremiumPurchaseReceipt"];
-        
-        // 3. Bơm Timestamp
-        NSDateFormatter *df = [[NSDateFormatter alloc] init];
-        [df setDateFormat:@"yyyy-MM-dd HH:mm:ss Z"];
-        [defaults setObject:[df stringFromDate:[NSDate date]] forKey:@"paid_timestamp"];
-        [defaults setObject:[df stringFromDate:[NSDate date]] forKey:@"paid_v2_timestamp"];
-        
-        // 4. Bật cờ Premium
-        [defaults setBool:YES forKey:@"paid_v2_user_enabled"];
-        [defaults setBool:YES forKey:@"UserInterfaceOverrider.endpointPremiumDev"];
-        [defaults setBool:NO forKey:@"ApplicationCoordinator.keyPremiumTrialUsed"];
-        
-        // Đồng bộ xuống đĩa
-        [defaults synchronize];
-        
-        qaLog(@"💉 Đã tiêm toàn bộ dữ liệu Premium vào UserDefaults!");
-    });
+    // 1. Trả về cờ Boolean cho Premium
+    if ([lower containsString:@"paid_v2_user_enabled"] || 
+        [lower containsString:@"endpointpremiumdev"] ||
+        [lower isEqualToString:@"paid"]) {
+        qaLog(@"💉 Ép @YES cho objectForKey: %@", defaultName);
+        return @YES;
+    }
+    
+    // 2. Trả về UUID cho Session ID (đã được ép đúng kiểu String, không gây loop)
+    if ([lower containsString:@"keypremiumsessionid"] || 
+        [lower containsString:@"keypremiumpurchasereceipt"]) {
+        qaLog(@"💉 Ép UUID cho objectForKey: %@", defaultName);
+        return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
+    }
+    
+    // 3. Trả về Timestamp
+    if ([lower containsString:@"paid_timestamp"]) {
+        return @"2099-12-31 23:59:59 +0000";
+    }
+    
+    // 4. Chặn cờ trial
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
+        return @NO;
+    }
+    
+    return %orig;
 }
 
-// Chặn Paywall nếu nó vẫn cố tình nhảy ra
+- (BOOL)boolForKey:(NSString *)defaultName {
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) return NO;
+    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"pro"]) return YES;
+    return %orig;
+}
+%end
+
+// Chặn Paywall nếu nó vẫn cố hiện
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
@@ -87,3 +91,8 @@ static void qaLog(NSString *format, ...) {
     }
 }
 %end
+
+%ctor {
+    [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
+    qaLog(@"🚀 QATestingUtils Loaded (SwiftUI Object Override)");
+}
