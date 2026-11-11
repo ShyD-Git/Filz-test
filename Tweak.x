@@ -35,13 +35,32 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Chặn màn hình Paywall (Chỉ chặn, không dùng nil) ---
+// --- 1. Log mọi key UserDefaults mà app đọc để tìm cờ Pro ---
+%hook NSUserDefaults
+- (BOOL)boolForKey:(NSString *)defaultName {
+    BOOL orig = %orig;
+    qaLog(@"🔍 Đọc Defaults [%@] = %d", defaultName, orig);
+    
+    NSString *lower = defaultName.lowercaseString;
+    if ([lower containsString:@"premium"] || [lower containsString:@"pro"] || 
+        [lower containsString:@"sub"] || [lower containsString:@"vip"] || 
+        [lower containsString:@"paid"] || [lower containsString:@"unlocked"] ||
+        [lower containsString:@"active"]) {
+        
+        qaLog(@"✅ Ép TRUE Defaults: %@", defaultName);
+        return YES;
+    }
+    return orig;
+}
+%end
+
+// --- 2. Chặn màn hình thanh toán ---
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
     NSString *clsName = NSStringFromClass([viewControllerToPresent class]).lowercaseString;
     
     if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
-        qaLog(@"🛑 Đã chặn màn hình thanh toán: %@", clsName);
+        qaLog(@"🛑 Chặn Paywall: %@", clsName);
         if (completion) completion();
         return;
     }
@@ -49,25 +68,7 @@ static void qaLog(NSString *format, ...) {
 }
 %end
 
-// --- 2. Hook NSUserDefaults (Chỉ hook boolForKey để tránh crash Firebase) ---
-%hook NSUserDefaults
-- (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower containsString:@"premium"] || [lower containsString:@"pro"] || 
-        [lower containsString:@"sub"] || [lower containsString:@"vip"] || 
-        [lower containsString:@"plus"] || [lower containsString:@"paid"] ||
-        [lower containsString:@"unlocked"]) {
-        
-        if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
-            return NO;
-        }
-        return YES;
-    }
-    return %orig;
-}
-%end
-
-// --- 3. Quét toàn bộ class của App (Bắt trúng Swift) ---
+// --- 3. Chỉ quét class của app Tempmail (Bỏ qua Apple/Google) ---
 static void patchAppClasses(void) {
     unsigned int classCount = 0;
     Class *classes = objc_copyClassList(&classCount);
@@ -79,20 +80,10 @@ static void patchAppClasses(void) {
         NSString *className = NSStringFromClass(cls);
         NSString *lowerCls = [className lowercaseString];
         
-        // Bỏ qua class hệ thống và Firebase (tránh crash)
-        if ([className hasPrefix:@"NS"] || [className hasPrefix:@"UI"] || 
-            [className hasPrefix:@"SK"] || [className hasPrefix:@"WK"] ||
-            [className hasPrefix:@"CA"] || [className hasPrefix:@"CF"] ||
-            [className hasPrefix:@"FIR"] || [className hasPrefix:@"GUL"] ||
-            [className hasPrefix:@"_NS"] || [className hasPrefix:@"_UI"]) {
-            continue;
-        }
-        
-        // Nhắm vào class của Tempmail
-        if ([className hasPrefix:@"_TtC"] || [lowerCls containsString:@"tempmail"] || 
-            [lowerCls containsString:@"store"] || [lowerCls containsString:@"user"] || 
-            [lowerCls containsString:@"premium"] || [lowerCls containsString:@"state"] ||
-            [lowerCls containsString:@"manager"]) {
+        // CHỈ NHẮM VÀO CLASS CỦA APP (Tempmail / TempMail)
+        if ([lowerCls containsString:@"tempmail"] || [lowerCls containsString:@"applicationcoordinator"]) {
+            
+            qaLog(@"🎯 Tìm thấy class App: %@", className);
             
             unsigned int methodCount = 0;
             Method *methods = class_copyMethodList(cls, &methodCount);
@@ -104,31 +95,26 @@ static void patchAppClasses(void) {
                 NSString *methodName = NSStringFromSelector(selector);
                 NSString *lowerMethod = methodName.lowercaseString;
                 
-                // Quét từ khóa rộng hơn
+                // Quét các hàm check quyền
                 if ([lowerMethod containsString:@"premium"] || 
                     [lowerMethod containsString:@"pro"] || 
                     [lowerMethod containsString:@"active"] ||
                     [lowerMethod containsString:@"sub"] ||
-                    [lowerMethod containsString:@"purchase"] ||
                     [lowerMethod containsString:@"vip"] ||
-                    [lowerMethod containsString:@"plus"] ||
                     [lowerMethod containsString:@"paid"] ||
-                    [lowerMethod containsString:@"unlocked"] ||
                     [lowerMethod containsString:@"trial"]) {
                     
                     const char *types = method_getTypeEncoding(method);
-                    // Nếu trả về BOOL hoặc Int
                     if (types && (types[0] == 'c' || types[0] == 'B' || types[0] == 'i')) {
                         
-                        // Bỏ qua hàm trialUsed để nó đéo báo hết hạn
                         if ([lowerMethod containsString:@"trialused"] || [lowerMethod containsString:@"expired"]) {
                             IMP falseImp = imp_implementationWithBlock(^BOOL(id _self, ...) { return NO; });
                             method_setImplementation(method, falseImp);
-                            qaLog(@"✂️ Ép FALSE hàm (Trial): -[%@ %@]", className, methodName);
+                            qaLog(@"✂️ Ép FALSE: -[%@ %@]", className, methodName);
                         } else {
                             IMP trueImp = imp_implementationWithBlock(^BOOL(id _self, ...) { return YES; });
                             method_setImplementation(method, trueImp);
-                            qaLog(@"✂️ Ép TRUE hàm (Pro): -[%@ %@]", className, methodName);
+                            qaLog(@"✂️ Ép TRUE: -[%@ %@]", className, methodName);
                         }
                         hookedCount++;
                     }
@@ -143,7 +129,7 @@ static void patchAppClasses(void) {
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Pro Unlocker)");
+    qaLog(@"🚀 QATestingUtils Loaded (Targeted)");
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         patchAppClasses();
