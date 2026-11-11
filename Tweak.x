@@ -40,62 +40,45 @@ static void qaLog(NSString *format, ...) {
 
 %hook NSUserDefaults
 - (id)objectForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    
-    // 1. Cờ Boolean (báo đã mua)
-    if ([lower containsString:@"paid_v2_user_enabled"] || [lower containsString:@"endpointpremiumdev"]) {
-        qaLog(@"💉 Ép @YES: %@", defaultName);
+    // CHỈ ép đúng 2 key này, không log gì cả để tránh nghẽn app
+    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
         return @YES;
     }
-    
-    // 2. Receipt (Phải là Base64, không phải UUID)
-    if ([lower containsString:@"receipt"]) {
-        qaLog(@"💉 Ép Receipt Base64: %@", defaultName);
-        return @"MIIbBAYJKoZIhvcNAQcCoIIb...";
-    }
-    
-    // 3. Session ID / paid / paid_v2 (Phải là UUID)
-    if ([lower containsString:@"sessionid"] || [lower isEqualToString:@"paid"] || [lower isEqualToString:@"paid_v2"]) {
-        qaLog(@"💉 Ép UUID: %@", defaultName);
-        return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
-    }
-    
-    // 4. Timestamp
-    if ([lower containsString:@"timestamp"]) {
-        return @"2099-12-31 23:59:59 +0000";
-    }
-    
-    // 5. Chặn cờ trial
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) {
+    if ([defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumTrialUsed"]) {
         return @NO;
     }
-    
-    return %orig;
-}
-
-- (NSString *)stringForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower containsString:@"receipt"]) return @"MIIbBAYJKoZIhvcNAQcCoIIb...";
-    if ([lower containsString:@"sessionid"] || [lower isEqualToString:@"paid"] || [lower isEqualToString:@"paid_v2"]) return @"602BFAEF-EBF5-478D-878B-FC0149D1BC2E";
-    if ([lower containsString:@"timestamp"]) return @"2099-12-31 23:59:59 +0000";
     return %orig;
 }
 
 - (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) return NO;
-    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"enabled"] || [lower containsString:@"pro"]) return YES;
+    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
+        return YES;
+    }
+    if ([defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumTrialUsed"]) {
+        return NO;
+    }
     return %orig;
+}
+
+- (void)setBool:(BOOL)value forKey:(NSString *)defaultName {
+    if ([defaultName isEqualToString:@"paid_v2_user_enabled"]) {
+        %orig(YES, defaultName);
+        return;
+    }
+    if ([defaultName isEqualToString:@"ApplicationCoordinator.keyPremiumTrialUsed"]) {
+        %orig(NO, defaultName);
+        return;
+    }
+    %orig;
 }
 %end
 
-// Chặn đứng màn hình Paywall
+// Chặn đứng màn hình Paywall nếu nó tự hiện
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     NSString *clsName = NSStringFromClass([self class]).lowercaseString;
     if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
-        qaLog(@"🛑 Chặn Paywall: %@", clsName);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self dismissViewControllerAnimated:YES completion:nil];
         });
@@ -105,5 +88,5 @@ static void qaLog(NSString *format, ...) {
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (Typed Overrides)");
+    qaLog(@"🚀 QATestingUtils Loaded (No Log Getter, App Alive)");
 }
