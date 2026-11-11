@@ -2,9 +2,9 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-// Đổi sang thư mục tmp của app để bypass sandbox
 static NSString *qaLogPath() {
-    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"QATestingUtils.log"];
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    return [paths.firstObject stringByAppendingPathComponent:@"QATestingUtils.log"];
 }
 
 static void qaLog(NSString *format, ...) {
@@ -23,9 +23,10 @@ static void qaLog(NSString *format, ...) {
     });
     
     dispatch_async(logQueue, ^{
-        NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:qaLogPath()];
+        NSString *path = qaLogPath();
+        NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:path];
         if (fileHandle == nil) {
-            [line writeToFile:qaLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
         } else {
             [fileHandle seekToEndOfFile];
             [fileHandle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
@@ -34,77 +35,80 @@ static void qaLog(NSString *format, ...) {
     });
 }
 
-// --- 1. Bắt màn hình Paywall và đá văng ---
+// --- 1. Chặn đứng Paywall ngay từ lúc gọi hàm Present ---
 %hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    NSString *clsName = NSStringFromClass([self class]);
+- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
+    NSString *clsName = NSStringFromClass([viewControllerToPresent class]).lowercaseString;
     
-    // Bắt các class có tên chứa Paywall hoặc Premium
-    if ([clsName.lowercaseString containsString:@"paywall"] || 
-        [clsName.lowercaseString containsString:@"premium"] ||
-        [clsName.lowercaseString containsString:@"upgrade"]) {
+    // Bắt tên class có chữ paywall, premium, purchase, store
+    if ([clsName containsString:@"paywall"] || 
+        [clsName containsString:@"premium"] || 
+        [clsName containsString:@"purchase"] ||
+        [clsName containsString:@"store"]) {
         
-        qaLog(@"🛑 Đá văng màn hình: %@", clsName);
-        [self dismissViewControllerAnimated:YES completion:nil];
+        qaLog(@"🛑 Chặn đứng Paywall: %@", clsName);
+        if (completion) completion();
+        return; // Đéo gọi %orig, màn hình đéo hiện
     }
+    %orig;
 }
 %end
 
-// --- 2. Hook StoreKit 2 (Transaction) ---
-// StoreKit 2 dùng class Swift, tao hook các hàm ObjC cầu nối
+// --- 2. Hook StoreKit 2 / NSUserDefaults (Ép cờ Pro) ---
 %hook NSUserDefaults
 - (BOOL)boolForKey:(NSString *)defaultName {
     NSString *lower = defaultName.lowercaseString;
     if ([lower containsString:@"premium"] || [lower containsString:@"pro"] || 
-        [lower containsString:@"sub"] || [lower containsString:@"purchase"]) {
-        qaLog(@"✅ Ép True NSUserDefaults: %@", defaultName);
+        [lower containsString:@"sub"] || [lower containsString:@"active"] || 
+        [lower containsString:@"trial"]) {
+        qaLog(@"✅ Ép NSUserDefaults [%@] = YES", defaultName);
         return YES;
     }
     return %orig;
 }
 %end
 
-// --- 3. Quét toàn bộ class Swift ra log để tìm mục tiêu ---
-static void dumpClassesToLog(void) {
-    qaLog(@"--- BẮT ĐẦU QUÉT CLASS ---");
-    unsigned int count;
-    Class *classes = objc_copyClassList(&count);
-    
-    NSArray *keywords = @[@"paywall", @"premium", @"store", @"purchase", @"sub", @"iap", @"pro", @"user"];
-    
-    for (unsigned int i = 0; i < count; i++) {
+// --- 3. Quét hàm Bool (Chỉ quét app, bỏ qua hệ thống) ---
+static void scanSwiftMethods(void) {
+    unsigned int classCount = 0;
+    Class *classes = objc_copyClassList(&classCount);
+    if (!classes) return;
+
+    int hookedCount = 0;
+    for (unsigned int i = 0; i < classCount; i++) {
         Class cls = classes[i];
         NSString *className = NSStringFromClass(cls);
-        NSString *lowerName = className.lowercaseString;
         
-        BOOL match = NO;
-        for (NSString *kw in keywords) {
-            if ([lowerName containsString:kw]) { match = YES; break; }
-        }
-        
-        if (match) {
-            qaLog(@"Class: %@", className);
+        // Class của app Swift thường bắt đầu bằng _TtC hoặc chứa chữ Manager, Store, User
+        if ([className hasPrefix:@"_TtC"] || 
+            [className.lowercaseString containsString:@"store"] || 
+            [className.lowercaseString containsString:@"user"] ||
+            [className.lowercaseString containsString:@"purchase"]) {
             
-            // Dump các hàm có khả năng trả về BOOL
-            unsigned int mCount;
-            Method *methods = class_copyMethodList(cls, &mCount);
-            for (unsigned int j = 0; j < mCount; j++) {
-                SEL sel = method_getName(methods[j]);
-                NSString *selName = NSStringFromSelector(sel);
-                const char *types = method_getTypeEncoding(methods[j]);
+            unsigned int methodCount = 0;
+            Method *methods = class_copyMethodList(cls, &methodCount);
+            if (!methods) continue;
+            
+            for (unsigned int j = 0; j < methodCount; j++) {
+                Method method = methods[j];
+                SEL selector = method_getName(method);
+                NSString *methodName = NSStringFromSelector(selector);
+                NSString *lowerMethod = methodName.lowercaseString;
                 
-                if (types && (types[0] == 'c' || types[0] == 'B')) {
-                    qaLog(@"   -> Method (BOOL): %@", selName);
+                if ([lowerMethod containsString:@"premium"] || 
+                    [lowerMethod containsString:@"pro"] || 
+                    [lowerMethod containsString:@"active"] ||
+                    [lowerMethod containsString:@"sub"] ||
+                    [lowerMethod containsString:@"trial"]) {
                     
-                    // Thử vá luôn hàm đó nếu có chữ pro/premium
-                    if ([selName.lowercaseString containsString:@"pro"] || 
-                        [selName.lowercaseString containsString:@"premium"] || 
-                        [selName.lowercaseString containsString:@"active"]) {
-                        
-                        IMP newImp = imp_implementationWithBlock(^BOOL(id _self, ...) { return YES; });
-                        method_setImplementation(methods[j], newImp);
-                        qaLog(@"   ✂️ Đã vá ép TRUE: %@", selName);
+                    const char *types = method_getTypeEncoding(method);
+                    if (types && (types[0] == 'c' || types[0] == 'B' || types[0] == 'i')) { // BOOL hoặc Int
+                        IMP newImp = imp_implementationWithBlock(^BOOL(id _self, ...) {
+                            return YES;
+                        });
+                        method_setImplementation(method, newImp);
+                        qaLog(@"✂️ Ép TRUE hàm: -[%@ %@]", className, methodName);
+                        hookedCount++;
                     }
                 }
             }
@@ -112,17 +116,19 @@ static void dumpClassesToLog(void) {
         }
     }
     free(classes);
-    qaLog(@"--- QUÉT CLASS XONG ---");
+    qaLog(@"--- Quét xong. Đã ép %d hàm. ---", hookedCount);
 }
 
 %ctor {
+    // Xóa log cũ
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
     
     qaLog(@"=======================");
     qaLog(@"🚀 QATestingUtils Loaded!");
     qaLog(@"=======================");
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        dumpClassesToLog();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        qaLog(@"Bắt đầu quét class...");
+        scanSwiftMethods();
     });
 }
