@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <StoreKit/StoreKit.h>
 
 static NSString *qaLogPath() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
@@ -12,100 +13,98 @@ static void qaLog(NSString *format, ...) {
     va_start(args, format);
     NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
-    
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    [formatter setDateFormat:@"HH:mm:ss"];
-    NSString *timeString = [formatter stringFromDate:[NSDate date]];
-    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timeString, msg];
-    
+    NSString *time = [NSDateFormatter localizedStringFromDate:[NSDate date] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle];
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", time, msg];
     static dispatch_queue_t logQueue;
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        logQueue = dispatch_queue_create("com.qa.log", DISPATCH_QUEUE_SERIAL);
-    });
-    
+    dispatch_once(&onceToken, ^{ logQueue = dispatch_queue_create("qa.log", DISPATCH_QUEUE_SERIAL); });
     dispatch_async(logQueue, ^{
-        if (![[NSFileManager defaultManager] fileExistsAtPath:qaLogPath()]) {
-            [line writeToFile:qaLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        } else {
-            NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:qaLogPath()];
-            if (fileHandle) {
-                [fileHandle seekToEndOfFile];
-                [fileHandle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-                [fileHandle closeFile];
-            }
-        }
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:qaLogPath()];
+        if (fh == nil) [line writeToFile:qaLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        else { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [fh closeFile]; }
     });
 }
 
-// --- 1. Ép Cờ Local Cho UI ---
-%hook NSUserDefaults
-- (BOOL)boolForKey:(NSString *)defaultName {
-    NSString *lower = defaultName.lowercaseString;
-    if ([lower containsString:@"trialused"] || [lower containsString:@"expired"]) return NO;
-    if ([lower containsString:@"paid"] || [lower containsString:@"premium"] || [lower containsString:@"pro"] || [lower containsString:@"enabled"]) return YES;
-    return %orig;
+// --- 1. Giả Lập JWS Receipt Cho StoreKit 2 ---
+%hook NSBundle
+- (NSURL *)appStoreReceiptURL {
+    NSURL *original = %orig;
+    NSString *docsDir = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *fakePath = [docsDir stringByAppendingPathComponent:@"fake_receipt"];
+    
+    if (![[NSFileManager defaultManager] fileExistsAtPath:fakePath]) {
+        // Chuỗi JSON giả lập JWS (Payload chứa thông tin Premium)
+        NSString *fakeJWS = @"{\"status\":0,\"environment\":\"Production\",\"receipt\":{\"bundle_id\":\"com.tempmail.ios\",\"in_app\":[{\"product_id\":\"premium_monthly\",\"purchase_date_ms\":\"1700000000000\"}]}}";
+        [fakeJWS writeToFile:fakePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+    return [NSURL fileURLWithPath:fakePath];
 }
 %end
 
-// --- 2. Đớp JSON Server, Nặn Thành Data Pro ---
+// --- 2. Hook StoreKit 2 (Ép hàm check quyền trả về True) ---
+// StoreKit 2 dùng Swift, nhưng có các class ObjC cầu nối (NSKVONotifying)
+// Tìm và vá các class có chữ 'Transaction' hoặc 'Product'
+static void patchStoreKit2() {
+    unsigned int count;
+    Class *classes = objc_copyClassList(&count);
+    for (unsigned int i = 0; i < count; i++) {
+        Class cls = classes[i];
+        NSString *clsName = NSStringFromClass(cls);
+        
+        // Nhắm vào các class cầu nối của StoreKit 2
+        if ([clsName containsString:@"StoreKit"] && ([clsName containsString:@"Transaction"] || [clsName containsString:@"Entitlement"])) {
+            qaLog(@"🎯 Móc StoreKit 2: %@", clsName);
+            unsigned int mCount;
+            Method *methods = class_copyMethodList(cls, &mCount);
+            for (unsigned int j = 0; j < mCount; j++) {
+                Method m = methods[j];
+                SEL sel = method_getName(m);
+                NSString *selName = NSStringFromSelector(sel);
+                if ([selName containsString:@"isActive"] || [selName containsString:@"isPremium"] || [selName containsString:@"current"]) {
+                    IMP newImp = imp_implementationWithBlock(^BOOL(id _self) { return YES; });
+                    method_setImplementation(m, newImp);
+                    qaLog(@"   ✂️ Ép TRUE: %@", selName);
+                }
+            }
+            free(methods);
+        }
+    }
+    free(classes);
+}
+
+// --- 3. Bắt Request Mạng (Nếu app gửi JWS lên server) ---
 %hook NSURLSession
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
-    
     void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
         if (data) {
             NSString *urlStr = request.URL.absoluteString;
-            NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            
-            // Bỏ qua API của Google, AppsFlyer, Firebase
-            if (![urlStr containsString:@"google"] && ![urlStr containsString:@"appsflyer"] && ![urlStr containsString:@"firebase"]) {
-                
-                if (jsonStr) {
-                    @try {
-                        NSMutableString *mutStr = [jsonStr mutableCopy];
-                        // Đổi cờ false thành true
-                        [mutStr replaceOccurrencesOfString:@"\"premium\":false" withString:@"\"premium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"isPremium\":false" withString:@"\"isPremium\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"active\":false" withString:@"\"active\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"isActive\":false" withString:@"\"isActive\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"subscribed\":false" withString:@"\"subscribed\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        [mutStr replaceOccurrencesOfString:@"\"is_subscribed\":false" withString:@"\"is_subscribed\":true" options:NSCaseInsensitiveSearch range:NSMakeRange(0, mutStr.length)];
-                        
-                        if (![mutStr isEqualToString:jsonStr]) {
-                            qaLog(@"✂️ Đã đổi cờ Free -> Pro cho URL: %@", urlStr);
-                            data = [mutStr dataUsingEncoding:NSUTF8StringEncoding];
-                        } else {
-                            // Log những URL mạng thật để xem nó trả về cái gì
-                            if (jsonStr.length < 500) {
-                                qaLog(@"📡 NET: %@\nRES: %@", urlStr, jsonStr);
-                            }
-                        }
-                    } @catch (NSException *e) {}
-                }
+            // Nếu request liên quan đến verify receipt
+            if ([urlStr containsString:@"verify"] || [urlStr containsString:@"purchase"] || [urlStr containsString:@"premium"]) {
+                qaLog(@"🛑 Bắt được API Verify: %@", urlStr);
+                NSString *fakeJSON = @"{\"status\":\"success\",\"is_premium\":true,\"active\":true}";
+                data = [fakeJSON dataUsingEncoding:NSUTF8StringEncoding];
+                response = [[NSHTTPURLResponse alloc] initWithURL:request.URL statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type":@"application/json"}];
             }
         }
         if (completionHandler) completionHandler(data, response, error);
     };
-    
     return %orig(request, wrappedCompletion);
 }
 %end
 
-// --- 3. Chặn Paywall Tự Bật Lên ---
-%hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    NSString *clsName = NSStringFromClass([self class]).lowercaseString;
-    if ([clsName containsString:@"trypremium"] || [clsName containsString:@"paywall"]) {
-        qaLog(@"🛑 Đá văng Paywall: %@", clsName);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self dismissViewControllerAnimated:YES completion:nil];
-        });
-    }
+// --- 4. Ép Cờ UserDefaults ---
+%hook NSUserDefaults
+- (BOOL)boolForKey:(NSString *)defaultName {
+    if ([defaultName containsString:@"trialused"] || [defaultName containsString:@"expired"]) return NO;
+    if ([defaultName containsString:@"paid"] || [defaultName containsString:@"premium"] || [defaultName containsString:@"pro"]) return YES;
+    return %orig;
 }
 %end
 
 %ctor {
     [[NSFileManager defaultManager] removeItemAtPath:qaLogPath() error:nil];
-    qaLog(@"🚀 QATestingUtils Loaded (JSON Hijack Mode)");
+    qaLog(@"🚀 QATestingUtils Loaded (StoreKit 2 Bypass)");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        patchStoreKit2();
+    });
 }
